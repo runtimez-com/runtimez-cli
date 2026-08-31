@@ -27,6 +27,34 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+      # An unset secret resolves to an EMPTY STRING rather than failing, so the first sign of
+      # trouble was a 401 after ninety seconds of building. Check the credential can actually
+      # reach both tap repos before spending that time.
+      - name: Preflight — tap credentials
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "::error::TAP_GITHUB_TOKEN is not set. Create a token with contents:write on" \
+                 "runtimez-com/homebrew-tap and runtimez-com/scoop-bucket, then:" \
+                 "gh secret set TAP_GITHUB_TOKEN --repo runtimez-com/runtimez-cli"
+            exit 1
+          fi
+          for repo in homebrew-tap scoop-bucket; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer $TAP_GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/runtimez-com/$repo")
+            case "$code" in
+              200) echo "runtimez-com/$repo reachable" ;;
+              401) echo "::error::TAP_GITHUB_TOKEN is invalid or expired (401 on $repo)"; exit 1 ;;
+              403) echo "::error::TAP_GITHUB_TOKEN lacks access to $repo (403). A fine-grained PAT" \
+                        "also needs org approval before it works."; exit 1 ;;
+              404) echo "::error::runtimez-com/$repo not found, or the token cannot see it"; exit 1 ;;
+              *)   echo "::error::unexpected HTTP $code checking $repo"; exit 1 ;;
+            esac
+          done
+
       - uses: sigstore/cosign-installer@v3
       - uses: goreleaser/goreleaser-action@v6
         with:
