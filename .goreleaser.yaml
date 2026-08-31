@@ -1,0 +1,87 @@
+version: 2
+
+project_name: rtz
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rtz
+    main: ./cmd/rtz
+    binary: rtz
+    env:
+      # Static binaries: the credential store reaches the Linux Secret Service over pure-Go
+      # D-Bus, so nothing here needs cgo.
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/runtimez-com/runtimez-cli/internal/version.Version={{.Version}}
+      - -X github.com/runtimez-com/runtimez-cli/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/runtimez-com/runtimez-cli/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# Every artifact is signed; a checksum file alone only proves the download matches whatever
+# the release page happens to serve.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+brews:
+  - name: rtz
+    repository:
+      owner: runtimez-com
+      name: homebrew-tap
+    homepage: https://github.com/runtimez-com/runtimez-cli
+    description: Operate and troubleshoot Kubernetes from the runtimez control plane
+    license: Apache-2.0
+    test: |
+      system "#{bin}/rtz", "version"
+
+nfpms:
+  - id: packages
+    package_name: rtz
+    homepage: https://github.com/runtimez-com/runtimez-cli
+    description: Operate and troubleshoot Kubernetes from the runtimez control plane
+    maintainer: runtimez <support@runtimez.com>
+    license: Apache-2.0
+    formats: [deb, rpm, apk]
+    bindir: /usr/bin
+
+scoops:
+  - repository:
+      owner: runtimez-com
+      name: scoop-bucket
+    homepage: https://github.com/runtimez-com/runtimez-cli
+    description: Operate and troubleshoot Kubernetes from the runtimez control plane
+    license: Apache-2.0
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]

@@ -1,0 +1,5 @@
+/dist/
+/rtz
+/bin/
+*.out
+.DS_Store
