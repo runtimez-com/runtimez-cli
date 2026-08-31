@@ -54,6 +54,11 @@ brews:
     repository:
       owner: runtimez-com
       name: homebrew-tap
+      branch: main
+      # Without this, goreleaser falls back to the default GITHUB_TOKEN, which Actions scopes
+      # to THIS repository only — the push into the tap then fails with a 403 that reads like
+      # a missing repo rather than a missing permission.
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/runtimez-com/runtimez-cli
     description: Operate and troubleshoot Kubernetes from the runtimez control plane
     license: Apache-2.0
@@ -74,6 +79,8 @@ scoops:
   - repository:
       owner: runtimez-com
       name: scoop-bucket
+      branch: main
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/runtimez-com/runtimez-cli
     description: Operate and troubleshoot Kubernetes from the runtimez control plane
     license: Apache-2.0

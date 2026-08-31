@@ -3,6 +3,13 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # A publish can fail after the artifacts are already uploaded (a tap token, a rate limit).
+  # Re-running against the existing tag beats minting a version number to paper over it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release from"
+        required: true
 
 permissions:
   contents: write
@@ -13,7 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
