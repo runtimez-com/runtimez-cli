@@ -255,3 +255,58 @@ func Post[T any](ctx context.Context, c *Client, path string, query url.Values, 
 	}
 	return out, nil
 }
+
+// RawResponse is one un-decoded HTTP exchange — for protocols that are not the ApiResponse
+// envelope, such as the MCP JSON-RPC endpoint the `rtz mcp` bridge forwards to.
+type RawResponse struct {
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+// PostRaw sends a JSON body and returns the response as-is (no envelope unwrapping, no
+// retries — the caller owns the protocol). The credential handling is the same as Do: bearer
+// header, pre-emptive refresh, and one refresh-and-retry on a 401 for a JWT credential.
+// headers are added verbatim on top of the defaults.
+func (c *Client) PostRaw(ctx context.Context, path string, headers map[string]string, body []byte) (*RawResponse, error) {
+	if c.Creds != nil && c.Creds.NeedsRefresh() {
+		_ = c.refresh(ctx)
+	}
+	resp, err := c.postRawOnce(ctx, path, headers, body)
+	if err == nil && resp.Status == http.StatusUnauthorized && c.Creds != nil && c.Creds.Kind == auth.KindJWT {
+		if rerr := c.refresh(ctx); rerr == nil {
+			return c.postRawOnce(ctx, path, headers, body)
+		}
+	}
+	return resp, err
+}
+
+func (c *Client) postRawOnce(ctx context.Context, path string, headers map[string]string, body []byte) (*RawResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL(path, nil), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "rtz/"+version.Version)
+	if c.Creds != nil {
+		if bearer := c.Creds.Bearer(); bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+	}
+	for k, v := range headers {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: read response: %w", path, err)
+	}
+	return &RawResponse{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: raw}, nil
+}

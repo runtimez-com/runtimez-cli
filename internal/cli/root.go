@@ -108,6 +108,7 @@ No kubeconfig, no cluster VPN, no browser.`,
 		newMetricsCmd(),
 		newAskCmd(),
 		newUpgradeCmd(),
+		newMcpCmd(),
 	)
 	return root
 }

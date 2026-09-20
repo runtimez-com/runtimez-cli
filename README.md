@@ -165,6 +165,24 @@ computed from missing evidence is the most dangerous output this tool could prod
 - `rca explain` states whether the answer came from a model, a cache replay, or a
   deterministic gate — the prose alone does not reveal which.
 
+## MCP server (Claude Code and other agents)
+
+`rtz mcp` serves the Runtimez MCP server over stdio, so an MCP client can ask Runtimez
+instead of guessing: what is running, what changed, ranked risk findings, the upgrade
+readiness ledger with the vendor's verbatim rule text, and a pre-merge manifest check. It
+is a bridge — every message is forwarded to the hosted endpoint (`POST /eac/mcp`) with this
+CLI's credential, so the tool catalog is exactly the server's and every tool is read-only.
+
+```bash
+claude mcp add runtimez -- rtz mcp                              # uses the current context
+claude mcp add runtimez -- rtz mcp --context prod --cluster prod-eu
+```
+
+Remote clients (Claude Code `--transport http`, Cursor, claude.ai connectors) can skip the
+CLI and point at `https://<api>/eac/mcp` with `Authorization: Bearer rk_...` (an API key
+with the `api:read` scope). A `--cluster` (or the context's cluster) is injected as the
+default `cluster` argument when the client did not pass one.
+
 ## Everyday commands
 
 ```bash
