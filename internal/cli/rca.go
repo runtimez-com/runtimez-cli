@@ -9,6 +9,7 @@ import (
 
 	"github.com/runtimez-com/runtimez-cli/internal/api"
 	"github.com/runtimez-com/runtimez-cli/internal/render"
+	"github.com/runtimez-com/runtimez-cli/internal/view"
 )
 
 // clusterEnv resolves the env plus a required org and cluster — the preamble every
@@ -110,73 +111,8 @@ func runWorkloadRCA(cmd *cobra.Command, e *env, orgID, clusterID, ref string) er
 		return e.printer.Print(r, nil)
 	}
 
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "%s/%s (%s)\n", r.Namespace, r.Name, render.Dash(r.Kind))
-	fmt.Fprintf(out, "  Restarts:    %d\n", r.RestartCount)
-	if r.K8sReason != "" {
-		fmt.Fprintf(out, "  Reason:      %s\n", r.K8sReason)
-	}
-	if r.OOMKilled {
-		fmt.Fprintln(out, "  OOMKilled:   yes")
-	}
-	if r.ExitCode != nil {
-		fmt.Fprintf(out, "  Exit code:   %d\n", *r.ExitCode)
-	}
-	if r.TerminatedAt != "" {
-		fmt.Fprintf(out, "  Terminated:  %s\n", r.TerminatedAt)
-	}
-	if r.TerminationSummary != "" {
-		fmt.Fprintf(out, "  Summary:     %s\n", r.TerminationSummary)
-	}
-
-	// App health is only meaningful when traces reached the backend; printing 0% error and
-	// 0ms p99 for a workload with no telemetry would read as a perfectly healthy service.
-	if r.AppHealthAvailable {
-		fmt.Fprintf(out, "  Requests:    %d, %.2f%% errors, p99 %dms\n",
-			r.RequestCount, r.ErrorRatePct, r.P99LatencyMs)
-	} else {
-		fmt.Fprintln(out, "  App health:  no trace data for this workload")
-	}
-
-	if len(r.WarningEvents) > 0 {
-		fmt.Fprintf(out, "\nWarning events (%d)\n", len(r.WarningEvents))
-		for _, ev := range r.WarningEvents {
-			fmt.Fprintf(out, "  %s  %s  %s\n",
-				render.Dash(ev.LastTimestamp), render.Dash(ev.Reason), truncateLine(ev.Message, 70))
-		}
-	}
-
-	fmt.Fprintf(out, "\nLog tail (%d lines)\n", len(r.LogTailLines))
-	if !r.TermLogsAvailable {
-		fmt.Fprintln(out, "  termination logs not collected for this workload")
-	}
-	for _, l := range r.LogTailLines {
-		fmt.Fprintf(out, "  %s\n", truncateLine(l, 100))
-	}
-
-	if len(r.SpansInFlight) > 0 {
-		fmt.Fprintf(out, "\nSpans in flight at failure (%d)\n", len(r.SpansInFlight))
-		for _, s := range r.SpansInFlight {
-			fmt.Fprintf(out, "  %s  %s  %s  %dms\n",
-				s.TraceID, truncateLine(s.SpanName, 40), render.Dash(s.StatusCode), s.DurationMs)
-		}
-	}
-
-	printEdges(cmd, "Upstream", r.Upstream)
-	printEdges(cmd, "Downstream", r.Downstream)
+	view.WorkloadRCA(cmd.OutOrStdout(), r)
 	return nil
-}
-
-func printEdges(cmd *cobra.Command, title string, edges []api.DependencyEdge) {
-	if len(edges) == 0 {
-		return
-	}
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "\n%s (%d)\n", title, len(edges))
-	for _, e := range edges {
-		fmt.Fprintf(out, "  %s/%s %s  %d bytes\n",
-			render.Dash(e.Namespace), render.Dash(e.OwnerName), render.Dash(e.OwnerKind), e.Bytes)
-	}
 }
 
 func newRcaExplainCmd() *cobra.Command {

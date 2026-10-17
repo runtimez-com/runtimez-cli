@@ -72,30 +72,20 @@ type WorkloadDetail struct {
 	ReplicaSets []k8s.Resource `json:"replicaSets"`
 }
 
-// Event is a correlated Kubernetes event. The backend returns warnings first, capped at 50.
-// Field names vary across agent versions, so the alternates are decoded rather than guessed.
+// Event is a correlated Kubernetes event row. The backend returns warnings first, capped at
+// 50 (KubeResourceClickHouseRepository.getCorrelatedEvents), and projects only these four
+// columns — type, reason, message and count live inside Spec, exactly as they do for every
+// other resource. Verified against 49 live events: the spec always carries reason, message,
+// type, count, lastTimestamp and involvedObject.
 type Event struct {
-	Type           string `json:"type"`
-	Reason         string `json:"reason"`
-	Message        string `json:"message"`
-	Count          int    `json:"count"`
-	InvolvedObject string `json:"involvedObject"`
-	Namespace      string `json:"namespace"`
-	Name           string `json:"name"`
-	LastTimestamp  string `json:"lastTimestamp"`
-	EventTime      string `json:"eventTime"`
-	FirstTimestamp string `json:"firstTimestamp"`
+	UID       string `json:"uid"`
+	Name      string `json:"name"`
+	Spec      string `json:"spec"`
+	CreatedAt string `json:"createdAt"`
 }
 
-// When picks whichever timestamp this event actually carries.
-func (e Event) When() string {
-	for _, ts := range []string{e.LastTimestamp, e.EventTime, e.FirstTimestamp} {
-		if ts != "" {
-			return ts
-		}
-	}
-	return ""
-}
+// Info decodes the spec blob into the fields worth rendering.
+func (e Event) Info() k8s.EventInfo { return k8s.ParseEvent(e.Spec, e.CreatedAt) }
 
 // Detail fetches one workload with its pods, events and related objects. kind is optional
 // and disambiguates a name shared by two controller kinds in one namespace.

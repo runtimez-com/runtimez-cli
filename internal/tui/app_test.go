@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,80 @@ type fakeClient struct {
 	changes    *api.Changes
 	logs       *api.LogPage
 	traces     *api.TracePage
+	rca        *api.WorkloadRCA
+
+	// what the last call was scoped to — the point of the drill-down keys
+	lastLogService string
+	lastTraceQuery string
+	lastRCARef     string
+	lastChangesRef string
+
+	// agent stubs: enough to drive a whole investigation with no backend
+	answer          *api.AgentAnswer
+	askErr          error
+	askedQuestion   string
+	streamFrames    []api.StreamFrame
+	streamID        string
+	cancelledStream string
+	mu              sync.Mutex
+}
+
+// The agent stubs let a test drive a whole investigation without a backend: frames are
+// pushed through the same callback the real SSE reader uses.
+func (f *fakeClient) Ask(_ context.Context, _, _ string, q api.AgentQuery) (*api.AgentAnswer, error) {
+	f.askedQuestion = q.Query
+	if f.askErr != nil {
+		return nil, f.askErr
+	}
+	if f.answer == nil {
+		return &api.AgentAnswer{Answer: "no findings", SessionID: "s-1"}, nil
+	}
+	return f.answer, nil
+}
+
+func (f *fakeClient) StreamInvestigation(ctx context.Context, _, _, streamID string, fn func(api.StreamFrame) error) error {
+	f.mu.Lock()
+	f.streamID = streamID
+	f.mu.Unlock()
+	for _, fr := range f.streamFrames {
+		if err := fn(fr); err != nil {
+			return err
+		}
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *fakeClient) CancelInvestigation(_ context.Context, _, _, streamID string) error {
+	f.mu.Lock()
+	f.cancelledStream = streamID
+	f.mu.Unlock()
+	return nil
+}
+
+// cancelled reads the bookkeeping the stream goroutine also writes.
+func (f *fakeClient) cancelled() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cancelledStream
+}
+
+func (f *fakeClient) WorkloadRCA(_ context.Context, _, _, ns, name, _ string) (*api.WorkloadRCA, error) {
+	f.calls++
+	f.lastRCARef = ns + "/" + name
+	if f.rca == nil {
+		return &api.WorkloadRCA{Namespace: ns, Name: name}, f.err
+	}
+	return f.rca, f.err
+}
+
+func (f *fakeClient) WorkloadChanges(_ context.Context, _, _, ns, name string, _, _ int) (*api.Changes, error) {
+	f.calls++
+	f.lastChangesRef = ns + "/" + name
+	if f.changes == nil {
+		return &api.Changes{}, f.err
+	}
+	return f.changes, f.err
 }
 
 func (f *fakeClient) Resources(_ context.Context, _, _, kind, ns string) ([]k8s.Resource, error) {
@@ -63,16 +138,18 @@ func (f *fakeClient) SlowOperations(_ context.Context, _, _, _, _ string, _ int)
 	return f.slowOps, f.err
 }
 
-func (f *fakeClient) SearchLogs(_ context.Context, _ api.LogSearch) (*api.LogPage, error) {
+func (f *fakeClient) SearchLogs(_ context.Context, req api.LogSearch) (*api.LogPage, error) {
 	f.calls++
+	f.lastLogService = req.ServiceName
 	if f.logs == nil {
 		return &api.LogPage{}, f.err
 	}
 	return f.logs, f.err
 }
 
-func (f *fakeClient) ListTraces(_ context.Context, _ api.TraceListRequest) (*api.TracePage, error) {
+func (f *fakeClient) ListTraces(_ context.Context, req api.TraceListRequest) (*api.TracePage, error) {
 	f.calls++
+	f.lastTraceQuery = req.Query
 	if f.traces == nil {
 		return &api.TracePage{}, f.err
 	}
@@ -297,18 +374,44 @@ func TestUnknownCommandIsReported(t *testing.T) {
 	}
 }
 
-// Detail exists for workload controllers only; opening a blank pane on a Pod would read as
-// a failure rather than an absence.
-func TestDescribeOnANonWorkloadExplainsInstead(t *testing.T) {
-	c := &fakeClient{rows: pods()}
-	m := newModel(t, c)
+// A kind with no renderer says so rather than opening a pane the code cannot fill. Services
+// are the case: the backend would answer, but there is nothing here that knows how to draw
+// one, and a blank pane reads as a failure rather than an absence.
+func TestDescribeOnAKindWithNoRendererExplainsInstead(t *testing.T) {
+	c := &fakeClient{rows: []k8s.Resource{
+		{Kind: "Service", Namespace: "payments", Name: "checkout", Spec: `{"type":"ClusterIP"}`},
+	}}
+	m := New(Options{Client: c, OrgID: "org1", ClusterID: "c1", Refresh: 10 * time.Millisecond})
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = m2.(Model)
+	m3, _ := m.Update(rowsMsg{data: dataset{
+		table: view.TableFor("Service", c.rows, true), resources: c.rows}})
+	m = m3.(Model)
 	m = key(m, "d")
 
 	if c.detailName != "" {
-		t.Errorf("a detail request was made for a Pod: %q", c.detailName)
+		t.Errorf("a detail request was made for a Service: %q", c.detailName)
 	}
 	if !strings.Contains(m.status, "no detail view") {
 		t.Errorf("status = %q", m.status)
+	}
+}
+
+// Pods are the most-described object on the screen, and the pane covers them.
+func TestDescribeOnAPodRequestsItsDetail(t *testing.T) {
+	c := &fakeClient{rows: pods()}
+	m := newModel(t, c)
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("pressing d on a Pod issued no request")
+	}
+	cmd()
+	if c.detailName == "" {
+		t.Error("no detail request was made for a Pod")
+	}
+	if strings.Contains(m.status, "no detail view") {
+		t.Errorf("Pod was refused: %q", m.status)
 	}
 }
 
