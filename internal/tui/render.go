@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/runtimez-com/runtimez-cli/internal/k8s"
-	"github.com/runtimez-com/runtimez-cli/internal/version"
 	"github.com/runtimez-com/runtimez-cli/internal/view"
 )
 
@@ -66,26 +65,6 @@ func (m Model) screenWidth() int {
 		return 100
 	}
 	return m.width
-}
-
-func (m Model) tabStrip() string {
-	head := chipStyle.Render(" "+m.view.Title+" ") + " " +
-		metaStyle.Render(m.scopeLabel()) + m.breadcrumb()
-	keys := "   " + footerStyle.Render(keyStyle.Render(":")+" browse screens   "+
-		keyStyle.Render("/")+" filter   "+
-		keyStyle.Render("?")+" help")
-	right := metaStyle.Render(m.identity() + " · rtz " + version.Version)
-
-	// On a narrow window the identity goes first, then the key reminder; what is on screen
-	// stays, clipped rather than wrapped.
-	w := m.screenWidth()
-	switch {
-	case lipgloss.Width(head+keys)+1+lipgloss.Width(right) <= w:
-		return spread(head+keys, right, w)
-	case lipgloss.Width(head+keys) <= w:
-		return head + keys
-	}
-	return clip(head, w)
 }
 
 func (m Model) identity() string {
@@ -268,12 +247,21 @@ func (m Model) footer() string {
 		}, "  ")
 	}
 
-	hints := " " + strings.Join([]string{
-		hint(":", "screens"), hint("/", "filter"), hint("d", "describe"),
-		hint("l", "logs"), hint("r", "rca"), hint("c", "changes"), hint("t", "traces"),
-		hint("a", "ask"), hint("s", "sort"), hint("w", "wide"),
-		hint("?", "help"), hint("q", "quit"),
-	}, "  ")
+	// Most useful first; what does not fit the window is dropped rather than wrapped. The
+	// help screen lists them all.
+	hints := " "
+	for _, h := range []string{
+		hint(":", "screens"), hint("1-5", "groups"), hint("tab", "next"), hint("/", "filter"),
+		hint("?", "help"), hint("d", "describe"), hint("l", "logs"), hint("r", "rca"),
+		hint("c", "changes"), hint("t", "traces"), hint("a", "ask"), hint("s", "sort"),
+		hint("w", "wide"), hint("q", "quit"),
+	} {
+		if lipgloss.Width(hints+h) > m.screenWidth() {
+			break
+		}
+		hints += h + "  "
+	}
+	hints = strings.TrimRight(hints, " ")
 
 	var left []string
 	if m.data.table != nil {
@@ -392,8 +380,8 @@ func (m Model) detailView() string {
 	// Keep the pane inside the window; the detail of a big workload is longer than a screen.
 	if m.height > 6 {
 		lines := strings.Split(body, "\n")
-		if len(lines) > m.height-6 {
-			lines = lines[:m.height-6]
+		if len(lines) > m.height-7 {
+			lines = lines[:m.height-7]
 			lines = append(lines, metaStyle.Render("… truncated — `rtz describe "+m.detailRef+"` prints it all"))
 		}
 		body = strings.Join(lines, "\n")
@@ -406,8 +394,8 @@ func (m Model) detailView() string {
 
 func (m Model) rowPaneView() string {
 	body := strings.TrimRight(m.rowPane, "\n")
-	if m.height > 6 {
-		body = clipLines(body, m.height-6)
+	if m.height > 7 {
+		body = clipLines(body, m.height-7)
 	}
 	return m.tabStrip() + "\n" +
 		panel(strings.ToLower(m.view.Title), body, m.screenWidth()) + "\n" +
@@ -421,7 +409,9 @@ func (m Model) helpView() string {
 		{"g / G", "top / bottom"},
 		{"enter, d", "describe the selected workload, or open the row's findings"},
 		{"/", "filter the visible rows"},
-		{":", "command bar"},
+		{":", "browse and search every screen"},
+		{"1 – 5", "switch group: " + groupKeyList()},
+		{"tab", "next screen in the group (shift+tab: previous)"},
 		{"s / i", "sort by the next column / invert the order"},
 		{"w", "wide columns, when the view has extras"},
 		{"0", "clear the namespace scope"},

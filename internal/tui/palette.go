@@ -182,8 +182,8 @@ func (m Model) paletteMatches() []command { return matchCommands(m.input.Value()
 func (m Model) paletteView() string {
 	height := m.bodyHeight() + 1
 	if m.height > 0 {
-		// Everything but the tab strip, the menu's own border and the two footer lines.
-		height = max(m.height-1-panelHeight(0, m.screenWidth())-2, 1)
+		// Everything but the tab lines, the menu's own border and the two footer lines.
+		height = max(m.height-tabStripLines-panelHeight(0, m.screenWidth())-2, 1)
 	}
 	matches := m.paletteMatches()
 	q := strings.TrimSpace(m.input.Value())
@@ -274,4 +274,13 @@ func commandGroups() []commandGroup {
 		out[len(out)-1].names = append(out[len(out)-1].names, n)
 	}
 	return out
+}
+
+// groupKeyList is "1 Resources, 2 Reliability, …" for the help screen.
+func groupKeyList() string {
+	var parts []string
+	for i, g := range tabGroups() {
+		parts = append(parts, itoa(i+1)+" "+g)
+	}
+	return strings.Join(parts, ", ")
 }

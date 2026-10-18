@@ -43,6 +43,8 @@ Run `rtz` with no arguments for the full-screen UI.
 | `:` | capacity and lifecycle — `:capacity`, `:pending`, `:storage`, `:maintain`, `:upgrade` |
 | `:` | add-on workspaces — `:karpenter`, `:ca`, `:traefik`, `:istio`, `:argocd`, `:cni`, `:ebs` |
 | `:` | resources and the rest — `:pods`, `:deploy`, `:sts`, `:ds`, `:svc`, `:ing`, `:nodes`, `:all`, `:risk`, `:signals`, `:changes`, `:logs`, `:traces`, `:ns <name>`, `:q` |
+| `1`–`5` | switch group — Resources, Reliability, Observability, Capacity, Add-ons — back to the screen you last used there |
+| `tab` / `shift+tab` | next / previous screen in the group; the two tab lines at the top show both |
 | `/` | filter the visible rows as you type |
 | `enter` / `d` | describe the selected workload; on capacity, Maintain, upgrade and add-on screens, open the row's findings with their verify commands |
 | `p` | pause or resume auto-refresh |

@@ -78,6 +78,8 @@ type Model struct {
 	// history is the trail of view names `[` and `]` walk, in visit order.
 	history []string
 	histPos int
+	// groupLast is the screen last shown in each group, for the 1–5 keys to return to.
+	groupLast map[string]string
 
 	detail    *api.WorkloadDetail
 	detailRef string
@@ -129,7 +131,7 @@ func New(opts Options) Model {
 		opts: opts, view: v, input: in, loading: true,
 		sortCol: -1,
 		history: []string{name}, histPos: 0,
-	}
+	}.remember(name)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -402,6 +404,13 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clampCursor()
 		return m, nil
 
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		return m.switchGroup(int(msg.String()[0] - '0'))
+	case "tab":
+		return m.cycleScreen(1)
+	case "shift+tab":
+		return m.cycleScreen(-1)
+
 	case "p":
 		m.paused = !m.paused
 		m.status = map[bool]string{true: "auto-refresh paused", false: "auto-refresh resumed"}[m.paused]
@@ -555,7 +564,7 @@ func (m Model) switchView(name string) (tea.Model, tea.Cmd) {
 		m.history = append(m.history, name)
 		m.histPos = len(m.history) - 1
 	}
-	return m.loadView(v)
+	return m.remember(name).loadView(v)
 }
 
 // loadView resets everything that belongs to the outgoing screen. The sort is one of them:
@@ -581,7 +590,7 @@ func (m Model) stepHistory(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.histPos = next
-	return m.loadView(views[m.history[next]])
+	return m.remember(m.history[next]).loadView(views[m.history[next]])
 }
 
 // cycleSort advances the sort one step: unsorted → column 0 → … → last column → unsorted.
@@ -689,7 +698,7 @@ func (m Model) bodyHeight() int {
 	if m.height <= 0 {
 		return 20
 	}
-	chrome := 1 + // tab strip
+	chrome := tabStripLines + // group tabs + screen tabs
 		1 + // column header inside the table panel
 		2 + // the table panel's own border
 		2 // hint line + status line
