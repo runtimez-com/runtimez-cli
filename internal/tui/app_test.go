@@ -32,6 +32,9 @@ type fakeClient struct {
 	logs       *api.LogPage
 	traces     *api.TracePage
 	rca        *api.WorkloadRCA
+	// workspaces holds canned capacity / maintain / upgrade / add-on responses, keyed by the
+	// Client method name (see workspaces_test.go).
+	workspaces map[string]any
 
 	// what the last call was scoped to — the point of the drill-down keys
 	lastLogService string
@@ -355,7 +358,7 @@ func TestCommandNamespaceScopesAndClears(t *testing.T) {
 func TestPlannedCommandSaysItIsNotBuilt(t *testing.T) {
 	m := newModel(t, &fakeClient{rows: pods()})
 	m = key(m, ":")
-	m = typeIn(m, "upgrade")
+	m = typeIn(m, "shield")
 	m = key(m, "enter")
 
 	if !strings.Contains(m.status, "not a view here") {

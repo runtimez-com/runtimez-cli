@@ -28,6 +28,18 @@ type Client interface {
 	Ask(ctx context.Context, orgID, clusterID string, q api.AgentQuery) (*api.AgentAnswer, error)
 	StreamInvestigation(ctx context.Context, orgID, clusterID, streamID string, fn func(api.StreamFrame) error) error
 	CancelInvestigation(ctx context.Context, orgID, clusterID, streamID string) error
+
+	// Capacity, Maintain, upgrade readiness and the add-on workspaces.
+	Capacity(ctx context.Context, orgID, clusterID string) (*api.Payload[api.Capacity], error)
+	MaintainItems(ctx context.Context, orgID string) (*api.Payload[api.MaintainList], error)
+	UpgradeReadiness(ctx context.Context, orgID, clusterID, targetVersion string) (*api.Payload[api.UpgradeReadiness], error)
+	NodePools(ctx context.Context, orgID, clusterID string) (*api.Payload[api.NodePools], error)
+	NodeGroups(ctx context.Context, orgID, clusterID string) (*api.Payload[api.NodeGroups], error)
+	IngressRoutes(ctx context.Context, orgID, clusterID string) (*api.Payload[api.IngressRoutes], error)
+	MeshWorkloads(ctx context.Context, orgID, clusterID string) (*api.Payload[api.MeshWorkloads], error)
+	GitOpsApps(ctx context.Context, orgID, clusterID string) (*api.Payload[api.GitOpsApps], error)
+	VpcCni(ctx context.Context, orgID, clusterID string) (*api.Payload[api.VpcCni], error)
+	EbsCsi(ctx context.Context, orgID, clusterID string) (*api.Payload[api.EbsCsi], error)
 }
 
 // scope is the object the screen is currently about.
@@ -82,6 +94,10 @@ type dataset struct {
 	notice string
 	// body replaces the table for screens that are prose rather than rows.
 	body string
+	// rowText is one pre-rendered detail per table row (same index), for screens whose rows
+	// are not Kubernetes resources but still have something to open — an add-on object's
+	// findings, a Maintain item, a pending pod. Built from the list response: no request.
+	rowText []string
 }
 
 // viewDef is one navigable screen.
@@ -357,12 +373,34 @@ var views = map[string]viewDef{
 	"traces":       tracesView,
 	"rca":          rcaView,
 	"triage":       triageView,
+
+	"capacity":  capacityView,
+	"cap":       capacityView,
+	"pending":   pendingView,
+	"storage":   storageView,
+	"pvc":       storageView,
+	"maintain":  maintainView,
+	"eol":       maintainView,
+	"upgrade":   upgradeView,
+	"nodepools": nodePoolsView,
+	"karpenter": nodePoolsView,
+	"ca":        nodeGroupsView,
+	"routes":    routesView,
+	"traefik":   routesView,
+	"mesh":      meshView,
+	"istio":     meshView,
+	"gitops":    gitopsView,
+	"argocd":    gitopsView,
+	"vpccni":    vpcCniView,
+	"cni":       vpcCniView,
+	"ebscsi":    ebsCsiView,
+	"ebs":       ebsCsiView,
 }
 
 // plannedViews name screens that exist in the roadmap but not yet in the binary, so the
 // command bar can say "not yet" instead of silently doing nothing.
 var plannedViews = map[string]string{
-	"upgrade": "the `rtz upgrade check` command",
+	"shield": "the Attack Paths page in the web app",
 }
 
 func joinWords(items []string) string {

@@ -79,6 +79,9 @@ type Model struct {
 
 	detail    *api.WorkloadDetail
 	detailRef string
+	// rowPane is the open detail of a non-resource row (dataset.rowText), drawn in the same
+	// pane as a describe.
+	rowPane string
 
 	ask askState
 
@@ -260,7 +263,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeDetail:
 		switch msg.String() {
 		case "esc", "q", "enter":
-			m.mode, m.detail = modeNormal, nil
+			m.mode, m.detail, m.rowPane = modeNormal, nil, ""
 		}
 		return m, nil
 	}
@@ -371,6 +374,10 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "d":
 		r, ok := m.selected()
 		if !ok {
+			if text, ok := m.selectedRowText(); ok {
+				m.rowPane, m.mode = text, modeDetail
+				return m, nil
+			}
 			if m.data.table != nil && len(m.data.resources) == 0 {
 				m.status = "this view has no per-row detail — press : to switch to a resource view"
 			}
@@ -616,6 +623,19 @@ func (m Model) selected() (k8s.Resource, bool) {
 		return k8s.Resource{}, false
 	}
 	return m.data.resources[idx], true
+}
+
+// selectedRowText is the pre-rendered detail of the row under the cursor, on screens whose
+// rows carry one. The visible index points into the table's rows, which rowText mirrors.
+func (m Model) selectedRowText() (string, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.visible) {
+		return "", false
+	}
+	idx := m.visible[m.cursor]
+	if idx < 0 || idx >= len(m.data.rowText) {
+		return "", false
+	}
+	return m.data.rowText[idx], true
 }
 
 // bodyHeight is the row budget: the window minus everything the chrome occupies. It is

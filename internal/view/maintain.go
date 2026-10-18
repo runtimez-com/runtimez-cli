@@ -12,8 +12,7 @@ import (
 // MaintainItemsTable lists lifecycle items, soonest deadline first. Items with no known
 // deadline sort last: an unknown deadline is not a far one, but it is not the next one either.
 func MaintainItemsTable(items []api.MaintainItem) *render.Table {
-	rows := append([]api.MaintainItem(nil), items...)
-	sort.SliceStable(rows, func(i, j int) bool { return daysKey(rows[i].DaysLeft) < daysKey(rows[j].DaysLeft) })
+	rows := SortMaintainItems(items)
 	t := &render.Table{
 		Headers:      []string{"CLUSTER", "TYPE", "ITEM", "VERSION", "DEADLINE", "DAYS LEFT", "SUPPORT", "WHERE"},
 		WideHeaders:  []string{"KIND", "CONFIDENCE", "OWNER", "PLATFORM", "SOURCE"},
@@ -33,6 +32,14 @@ func MaintainItemsTable(items []api.MaintainItem) *render.Table {
 			render.Dash(it.Owner), platform, render.Dash(it.SourceURL)})
 	}
 	return t
+}
+
+// SortMaintainItems is the order MaintainItemsTable draws in, for callers that need a row's
+// item back from its index.
+func SortMaintainItems(items []api.MaintainItem) []api.MaintainItem {
+	rows := append([]api.MaintainItem(nil), items...)
+	sort.SliceStable(rows, func(i, j int) bool { return daysKey(rows[i].DaysLeft) < daysKey(rows[j].DaysLeft) })
+	return rows
 }
 
 func daysKey(d *int) int {

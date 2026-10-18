@@ -97,8 +97,7 @@ func CapacityNodesTable(c *api.Capacity) *render.Table {
 
 // BlockedTable lists pods the scheduler could not place, longest-waiting first.
 func BlockedTable(c *api.Capacity) *render.Table {
-	rows := append(c.Blocked[:0:0], c.Blocked...)
-	sort.SliceStable(rows, func(i, j int) bool { return i64(rows[i].PendingSeconds) > i64(rows[j].PendingSeconds) })
+	rows := SortBlocked(c)
 	t := &render.Table{
 		Headers:      []string{"NAMESPACE", "POD", "OWNER", "PENDING", "CATEGORY", "SHORTFALL", "WHY"},
 		WideHeaders:  []string{"NOMINATED", "VERIFY"},
@@ -120,6 +119,13 @@ func BlockedTable(c *api.Capacity) *render.Table {
 		t.WideRows = append(t.WideRows, []string{render.Dash(b.NominatedNode), render.Dash(b.VerifyCommand)})
 	}
 	return t
+}
+
+// SortBlocked is the order BlockedTable draws in: longest-waiting first.
+func SortBlocked(c *api.Capacity) []api.BlockedPod {
+	rows := append(c.Blocked[:0:0], c.Blocked...)
+	sort.SliceStable(rows, func(i, j int) bool { return i64(rows[i].PendingSeconds) > i64(rows[j].PendingSeconds) })
+	return rows
 }
 
 // StorageTable lists PVCs, fullest first, then pending claims.

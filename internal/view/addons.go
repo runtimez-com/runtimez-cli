@@ -22,12 +22,7 @@ func findingCells(rs []api.AddonReason) (string, string) {
 
 // ReasonsTable lists one row's findings, worst first, with the command that verifies each.
 func ReasonsTable(rs []api.AddonReason) *render.Table {
-	rows := append([]api.AddonReason(nil), rs...)
-	sort.SliceStable(rows, func(i, j int) bool {
-		a, _ := api.SeverityRank(rows[i].Severity)
-		b, _ := api.SeverityRank(rows[j].Severity)
-		return a > b
-	})
+	rows := sortReasons(rs)
 	t := &render.Table{
 		Headers:      []string{"SEVERITY", "RULE", "TITLE", "OBJECT", "VERIFY"},
 		WideHeaders:  []string{"MESSAGE", "RECOMMENDATION"},

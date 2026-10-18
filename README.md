@@ -40,8 +40,10 @@ Run `rtz` with no arguments for the full-screen UI.
 | Key | Action |
 |---|---|
 | `:` | command bar — `:pods`, `:deploy`, `:sts`, `:ds`, `:svc`, `:ing`, `:nodes`, `:all`, `:risk`, `:signals`, `:changes`, `:logs`, `:traces`, `:ns <name>`, `:q` |
+| `:` | capacity and lifecycle — `:capacity`, `:pending`, `:storage`, `:maintain`, `:upgrade` |
+| `:` | add-on workspaces — `:karpenter`, `:ca`, `:traefik`, `:istio`, `:argocd`, `:cni`, `:ebs` |
 | `/` | filter the visible rows as you type |
-| `enter` / `d` | describe the selected workload |
+| `enter` / `d` | describe the selected workload; on capacity, Maintain, upgrade and add-on screens, open the row's findings with their verify commands |
 | `p` | pause or resume auto-refresh |
 | `ctrl+r` | refresh now |
 | `?` | keys and commands |

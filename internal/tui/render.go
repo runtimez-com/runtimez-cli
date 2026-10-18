@@ -31,6 +31,9 @@ func (m Model) View() string {
 	if m.mode == modeAsk {
 		return m.askView()
 	}
+	if m.mode == modeDetail && m.rowPane != "" {
+		return m.rowPaneView()
+	}
 	if m.mode == modeDetail && m.detail != nil {
 		return m.detailView()
 	}
@@ -381,12 +384,22 @@ func (m Model) detailView() string {
 		footerStyle.Render(" "+keyStyle.Render("esc")+" back   "+keyStyle.Render("q")+" back")
 }
 
+func (m Model) rowPaneView() string {
+	body := strings.TrimRight(m.rowPane, "\n")
+	if m.height > 6 {
+		body = clipLines(body, m.height-6)
+	}
+	return m.tabStrip() + "\n" +
+		panel(strings.ToLower(m.view.Title), body, m.screenWidth()) + "\n" +
+		footerStyle.Render(" "+keyStyle.Render("esc")+" back   "+keyStyle.Render("q")+" back")
+}
+
 func (m Model) helpView() string {
 	keys := [][2]string{
 		{"↑ ↓ / j k", "move"},
 		{"pgup pgdn", "page"},
 		{"g / G", "top / bottom"},
-		{"enter, d", "describe the selected workload"},
+		{"enter, d", "describe the selected workload, or open the row's findings"},
 		{"/", "filter the visible rows"},
 		{":", "command bar"},
 		{"s / i", "sort by the next column / invert the order"},
@@ -415,10 +428,14 @@ func (m Model) helpView() string {
 		{":triage", "what is failing right now"},
 		{":risk, :rca, :signals, :changes", "reliability views"},
 		{":logs, :traces", "observability views"},
+		{":capacity, :pending, :storage", "capacity: pools, pending pods, PVCs"},
+		{":maintain, :upgrade", "support deadlines, upgrade impact per app"},
+		{":karpenter, :ca, :traefik", "add-on workspaces"},
+		{":istio, :argocd, :cni, :ebs", "add-on workspaces"},
 		{":ns <name>", "scope to a namespace (bare :ns clears it)"},
 		{":q", "quit"},
 	} {
-		b.WriteString(keyStyle.Render(lipgloss.NewStyle().Width(26).Render(c[0])) + c[1] + "\n")
+		b.WriteString(keyStyle.Render(lipgloss.NewStyle().Width(32).Render(c[0])) + c[1] + "\n")
 	}
 	b.WriteString("\n" + metaStyle.Render(
 		"Every view here has a flag equivalent — :deploy is `rtz get deploy`, d is `rtz describe`."))

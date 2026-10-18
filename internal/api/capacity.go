@@ -68,19 +68,7 @@ type Capacity struct {
 		Headroom     *Res   `json:"headroom"`
 		Pods         int    `json:"pods"`
 	} `json:"nodes"`
-	Blocked []struct {
-		Namespace         string `json:"namespace"`
-		Name              string `json:"name"`
-		OwnerKind         string `json:"ownerKind"`
-		OwnerName         string `json:"ownerName"`
-		PendingSeconds    *int64 `json:"pendingSeconds"`
-		State             string `json:"state"`
-		PrimaryCategory   string `json:"primaryCategory"`
-		CapacityShortfall bool   `json:"capacityShortfall"`
-		Message           string `json:"message"`
-		NominatedNode     string `json:"nominatedNode"`
-		VerifyCommand     string `json:"verifyCommand"`
-	} `json:"blocked"`
+	Blocked        []BlockedPod `json:"blocked"`
 	BlockedSummary *struct {
 		Total             int            `json:"total"`
 		Listed            int            `json:"listed"`
@@ -406,4 +394,19 @@ type FleetCapacity struct {
 // FleetCapacity fetches capacity for every cluster in the org.
 func (c *Client) FleetCapacity(ctx context.Context, orgID string) (*Payload[FleetCapacity], error) {
 	return GetPayload[FleetCapacity](ctx, c, fmt.Sprintf("/eac/api/1.0/orgs/%s/capacity/fleet", orgID), nil)
+}
+
+// BlockedPod is a pod the scheduler could not place.
+type BlockedPod struct {
+	Namespace         string `json:"namespace"`
+	Name              string `json:"name"`
+	OwnerKind         string `json:"ownerKind"`
+	OwnerName         string `json:"ownerName"`
+	PendingSeconds    *int64 `json:"pendingSeconds"`
+	State             string `json:"state"`
+	PrimaryCategory   string `json:"primaryCategory"`
+	CapacityShortfall bool   `json:"capacityShortfall"`
+	Message           string `json:"message"`
+	NominatedNode     string `json:"nominatedNode"`
+	VerifyCommand     string `json:"verifyCommand"`
 }
