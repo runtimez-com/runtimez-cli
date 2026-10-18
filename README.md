@@ -117,6 +117,57 @@ otherwise reads exactly like one built on fresh data. Extended-support costs are
 
 `upgrade fleet` reports clusters it could not analyse rather than folding them into a pass.
 
+`upgrade check` also lists the add-ons that must move with Kubernetes, how many patches the
+cluster is behind, and an **Applications** section: per namespace, what the app team must
+change before the upgrade and what is only affected by it.
+
+## Capacity
+
+```bash
+rtz capacity                           # headroom per axis, node pools, pending pods
+rtz capacity --section blocked         # every pending pod and why (pools|nodes|blocked|storage|network|batch|special)
+rtz capacity trend --days 30           # growth and days until each pool is full
+rtz capacity cost                      # node cost per pool and the levers that change it
+rtz capacity namespaces                # requests, quota and pending pods per namespace
+rtz capacity fleet                     # every cluster, soonest-full first
+```
+
+Usage gaps (nodes with no samples), truncated rows, uncollected quotas and unpriced nodes
+are stated as warnings — an unread figure prints `?` or `unpriced`, never `0`.
+
+## Maintain
+
+```bash
+rtz maintain items --within 90         # support deadlines across the org, soonest first
+rtz maintain items --fail-on-days 30   # CI: exit 4 when a deadline is 30 days away or less
+rtz maintain packages --ecosystem maven --q log4j
+rtz maintain dependents data/StatefulSet/postgres   # who connects to it
+rtz maintain impact data/StatefulSet/postgres --target 17
+```
+
+Platform items (Kubernetes, add-ons, system workloads) are hidden unless `--platform` —
+`rtz upgrade check` owns those. A list the backend could not finish reading exits 1.
+
+## Add-on workspaces
+
+```bash
+rtz addons nodepools [name]            # Karpenter (alias: karpenter)
+rtz addons cluster-autoscaler [group]  # alias: ca
+rtz addons ingress [ns/name]           # Traefik routes (alias: traefik)
+rtz addons mesh [ns/name]              # Istio (alias: istio)
+rtz addons gitops [ns/name]            # Argo CD (alias: argocd)
+rtz addons vpc-cni [node]              # Amazon VPC CNI
+rtz addons ebs-csi [node]              # Amazon EBS CSI
+rtz addons istio --fail-on high        # CI gate on add-on findings
+```
+
+Without an argument each lists its objects with the worst finding; with one it prints that
+object's findings with the command that verifies each. An add-on that is not installed, not
+synced or has its rules off says so instead of printing an empty table.
+
+`-o json` / `-o yaml` on every command above prints the full server document, not the subset
+the tables show.
+
 ## Pre-merge gate
 
 ```bash

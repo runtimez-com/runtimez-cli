@@ -47,17 +47,21 @@ Without --target the backend evaluates the implied next minor version.`,
 				return err
 			}
 
-			r, err := e.client.UpgradeReadiness(cmd.Context(), orgID, clusterID, target)
+			p, err := e.client.UpgradeReadiness(cmd.Context(), orgID, clusterID, target)
 			if err != nil {
 				return err
 			}
+			r := &p.Typed
 			if e.printer.Format.Structured() {
-				if err := e.printer.Print(r, nil); err != nil {
+				if err := e.printer.Print(p.Raw, nil); err != nil {
 					return err
 				}
 			} else {
 				printReadiness(cmd, r)
 				if err := e.printer.Print(r.Findings, view.FindingsTable(r.Findings)); err != nil {
+					return err
+				}
+				if err := printUpgradeImpact(e, cmd.OutOrStdout(), r); err != nil {
 					return err
 				}
 				warnReadinessQuality(cmd.ErrOrStderr(), r)
@@ -97,6 +101,43 @@ func printReadiness(cmd *cobra.Command, r *api.UpgradeReadiness) {
 		fmt.Fprintf(out, "  Extended support: $%.0f/year (%s)\n", *c, label)
 	}
 	fmt.Fprintln(out)
+}
+
+// printUpgradeImpact adds the sections newer backends return: add-ons that must move, patch
+// currency, and the per-application view. Each is skipped when the backend sent nothing, so
+// an older backend prints exactly what it did before.
+func printUpgradeImpact(e *env, out io.Writer, r *api.UpgradeReadiness) error {
+	if len(r.AddonHops) > 0 {
+		if err := printSection(e, out, "Add-ons that must move", view.AddonHopsTable(r)); err != nil {
+			return err
+		}
+	}
+	if pc := r.PatchCurrency; pc != nil && !pc.UpToDate && pc.PatchesBehind > 0 {
+		label := ""
+		if !pc.DataSourced {
+			label = " (unsourced)"
+		}
+		fmt.Fprintf(out, "\nPatch: %s is %d patch(es) behind %s%s\n", render.Dash(pc.CurrentVersion), pc.PatchesBehind,
+			render.Dash(pc.LatestPatchVersion), label)
+		if pc.Advisory != "" {
+			fmt.Fprintf(out, "  %s\n", pc.Advisory)
+		}
+	}
+	if ai := r.AppImpact; ai != nil {
+		if err := printSection(e, out, "Applications", view.AppImpactTable(r)); err != nil {
+			return err
+		}
+		if ai.PlatformFindings > 0 {
+			fmt.Fprintf(out, "  %d finding(s) are platform-only (no application object)\n", ai.PlatformFindings)
+		}
+		if !ai.NamespacesRead {
+			fmt.Fprintln(out, "  note: namespaces were not read — findings could not all be placed on an application")
+		}
+		if ai.UnattributedObjects > 0 {
+			fmt.Fprintf(out, "  note: %d object(s) could not be placed on an application\n", ai.UnattributedObjects)
+		}
+	}
+	return nil
 }
 
 // warnReadinessQuality surfaces the fields that say how much the verdict is worth. A

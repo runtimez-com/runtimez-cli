@@ -39,6 +39,50 @@ type UpgradeReadiness struct {
 		Status string `json:"status"`
 		Detail string `json:"detail"`
 	} `json:"coverage"`
+	// AppImpact groups the findings by the namespace (application) they hit: what an app team
+	// must change before the upgrade, and what is only affected by it.
+	AppImpact *struct {
+		Applications []struct {
+			Namespace  string          `json:"namespace"`
+			MustChange []AppImpactItem `json:"mustChange"`
+			Affected   []AppImpactItem `json:"affected"`
+		} `json:"applications"`
+		PlatformFindings    int  `json:"platformFindings"`
+		UnattributedObjects int  `json:"unattributedObjects"`
+		NamespacesRead      bool `json:"namespacesRead"`
+	} `json:"appImpact"`
+	// AddonHops are add-ons that must move before (or right after) Kubernetes does.
+	AddonHops []struct {
+		AddonID          string `json:"addonId"`
+		InstalledVersion string `json:"installedVersion"`
+		RequiredVersion  string `json:"requiredVersion"`
+		Reason           string `json:"reason"`
+		KubernetesFirst  bool   `json:"kubernetesFirst"`
+		ThenVersion      string `json:"thenVersion"`
+	} `json:"addonHops"`
+	PatchCurrency *struct {
+		CurrentVersion     string `json:"currentVersion"`
+		LatestPatchVersion string `json:"latestPatchVersion"`
+		PatchesBehind      int    `json:"patchesBehind"`
+		UpToDate           bool   `json:"upToDate"`
+		Status             string `json:"status"`
+		Advisory           string `json:"advisory"`
+		DataSourced        bool   `json:"dataSourced"`
+	} `json:"patchCurrency"`
+}
+
+// AppImpactItem is one upgrade finding as it lands on an application.
+type AppImpactItem struct {
+	RuleID           string   `json:"ruleId"`
+	Title            string   `json:"title"`
+	Severity         string   `json:"severity"`
+	AppliesAtVersion string   `json:"appliesAtVersion"`
+	Addon            string   `json:"addon"`
+	Impact           string   `json:"impact"`
+	Recommendation   string   `json:"recommendation"`
+	VerifyCommand    string   `json:"verifyCommand"`
+	Objects          []string `json:"objects"`
+	Component        string   `json:"component"`
 }
 
 // FleetUpgradeItem is one cluster's row in the fleet view.
@@ -60,16 +104,12 @@ type FleetUpgradeItem struct {
 
 // UpgradeReadiness fetches one cluster's readiness. targetVersion is optional; the backend
 // picks the implied next version when it is empty.
-func (c *Client) UpgradeReadiness(ctx context.Context, orgID, clusterID, targetVersion string) (*UpgradeReadiness, error) {
+func (c *Client) UpgradeReadiness(ctx context.Context, orgID, clusterID, targetVersion string) (*Payload[UpgradeReadiness], error) {
 	q := url.Values{}
 	if targetVersion != "" {
 		q.Set("targetVersion", targetVersion)
 	}
-	out, err := Get[UpgradeReadiness](ctx, c, clusterPath(orgID, clusterID, "/upgrade-readiness"), q)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
+	return GetPayload[UpgradeReadiness](ctx, c, clusterPath(orgID, clusterID, "/upgrade-readiness"), q)
 }
 
 // FleetUpgradeReadiness fetches every cluster's readiness at its implied target.
