@@ -215,8 +215,10 @@ func (m Model) body() string {
 	case m.data.body != "":
 		// Some screens are prose, not rows — a root cause is a narrative.
 		return pad(clipLines(m.data.body, height+1))
-	case m.loading && len(m.visible) == 0:
-		return pad(metaStyle.Render("loading…"))
+	case m.loading && m.data.table == nil && m.data.body == "":
+		// Nothing for this screen has arrived yet. A refresh of a loaded screen keeps its
+		// rows and says so in the corner instead.
+		return pad(m.loaderLine("Loading " + m.view.Title + "…"))
 	case m.data.table == nil || len(m.data.table.Rows) == 0:
 		msg := "No resources found."
 		if m.data.table != nil && m.data.table.EmptyMessage != "" {
@@ -301,8 +303,12 @@ func (m Model) liveMarker() string {
 		return errStyle.Render("● error")
 	case m.paused:
 		return warnStyle.Render("❚❚ paused")
+	case m.loading && m.describing != "":
+		return m.spin.View() + metaStyle.Render(" describing "+clip(m.describing, 40))
+	case m.loading && m.data.table == nil && m.data.body == "":
+		return m.spin.View() + metaStyle.Render(" loading")
 	case m.loading:
-		return metaStyle.Render("◌ loading")
+		return m.spin.View() + metaStyle.Render(" refreshing")
 	default:
 		return okStyle.Render("● live")
 	}
@@ -445,4 +451,14 @@ func (m Model) helpView() string {
 // sinceUpdate is elapsed time since the last successful fetch.
 func sinceUpdate(m Model) time.Duration {
 	return time.Since(m.lastUpdated)
+}
+
+// loaderLine is the spinner and what it is waiting for, with the wait once it is long enough
+// to wonder about — a request that is slow and one that is stuck look the same otherwise.
+func (m Model) loaderLine(what string) string {
+	line := m.spin.View() + " " + metaStyle.Render(what)
+	if d := time.Since(m.loadStart); d >= 2*time.Second && !m.loadStart.IsZero() {
+		line += metaStyle.Render("  " + k8s.Duration(d))
+	}
+	return line
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -40,6 +41,9 @@ type Options struct {
 	APIURL      string
 	Refresh     time.Duration
 	InitialView string
+	// Animate runs the loading spinner. Off in tests, where a ticking spinner would keep
+	// every command batch alive; the loader still draws, as a still frame.
+	Animate bool
 }
 
 // Model is the root Bubble Tea model.
@@ -89,7 +93,16 @@ type Model struct {
 
 	ask askState
 
-	loading     bool
+	loading bool
+	// seq numbers each screen load; a response carrying an older number is for a screen
+	// the operator already left, and drawing it would put old rows under the new title.
+	seq       int
+	loadStart time.Time
+	// describing is the workload a describe is waiting on, for the loader to name.
+	describing string
+	spin       spinner.Model
+	spinning   bool
+
 	paused      bool
 	lastUpdated time.Time
 	err         error
@@ -97,6 +110,7 @@ type Model struct {
 }
 
 type rowsMsg struct {
+	seq  int
 	data dataset
 	err  error
 }
@@ -123,12 +137,14 @@ func New(opts Options) Model {
 		v = views["pods"]
 	}
 
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(keyStyle))
+
 	in := textinput.New()
 	in.Prompt = ""
 	in.CharLimit = 120
 
 	return Model{
-		opts: opts, view: v, input: in, loading: true,
+		opts: opts, view: v, input: in, loading: true, spin: sp, loadStart: time.Now(),
 		sortCol: -1,
 		history: []string{name}, histPos: 0,
 	}.remember(name)
@@ -154,11 +170,12 @@ func (m Model) fetch() tea.Cmd {
 	if v.scopable {
 		req.Scope = m.scope
 	}
+	seq := m.seq
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		d, err := v.fetch(ctx, req)
-		return rowsMsg{data: d, err: err}
+		return rowsMsg{seq: seq, data: d, err: err}
 	}
 }
 
@@ -173,8 +190,43 @@ func (m Model) fetchDetail(r k8s.Resource) tea.Cmd {
 	}
 }
 
+// Update handles one message, then starts the spinner if that left something loading. The
+// spinner stops itself on the first tick after the loading ends, so an idle screen does not
+// redraw ten times a second.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	mm := next.(Model)
+	if mm.opts.Animate && mm.busy() && !mm.spinning {
+		mm.spinning = true
+		return mm, tea.Batch(cmd, mm.spin.Tick)
+	}
+	return mm, cmd
+}
+
+// busy is whether anything on screen is waiting on the API.
+func (m Model) busy() bool { return m.loading || m.ask.busy }
+
+// beginLoad starts a new screen load: the old rows, error and caveat go, so the loader
+// shows instead of the previous screen's data under the new title.
+func (m Model) beginLoad() Model {
+	m.seq++
+	m.loading, m.loadStart, m.err = true, time.Now(), nil
+	m.data, m.visible, m.shown = dataset{}, nil, nil
+	m.cursor, m.offset = 0, 0
+	return m
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !m.busy() {
+			m.spinning = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -185,9 +237,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paused || m.mode != modeNormal {
 			return m, m.tick()
 		}
+		m.loading = true
 		return m, tea.Batch(m.fetch(), m.tick())
 
 	case rowsMsg:
+		if msg.seq != m.seq {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err
@@ -204,7 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detailMsg:
-		m.loading = false
+		m.loading, m.describing = false, ""
 		if msg.err != nil {
 			m.err = msg.err
 			m.mode = modeNormal
@@ -378,7 +434,8 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case !m.scope.empty():
 			m.scope = scope{}
-			m.loading, m.status = true, "scope cleared"
+			m = m.beginLoad()
+			m.status = "scope cleared"
 			return m, m.fetch()
 		}
 		m.status = ""
@@ -437,7 +494,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("no detail view for %s — describe covers Pod, Deployment, StatefulSet and DaemonSet", r.Kind)
 			return m, nil
 		}
-		m.loading = true
+		m.loading, m.describing = true, r.Namespace+"/"+r.Name
 		return m, m.fetchDetail(r)
 
 	case "s":
@@ -473,7 +530,8 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.namespace = ""
-		m.loading, m.status = true, "showing all namespaces"
+		m = m.beginLoad()
+		m.status = "showing all namespaces"
 		return m, m.fetch()
 
 	case "[":
@@ -517,7 +575,9 @@ func (m Model) runCommand(raw string) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "namespace: " + arg
 		}
-		m.loading = true
+		status := m.status
+		m = m.beginLoad()
+		m.status = status
 		return m, m.fetch()
 	}
 
@@ -571,11 +631,11 @@ func (m Model) switchView(name string) (tea.Model, tea.Cmd) {
 // column 3 means something different on every view, so carrying it over would silently
 // order the new table by whatever happens to sit there.
 func (m Model) loadView(v viewDef) (tea.Model, tea.Cmd) {
+	m = m.beginLoad()
 	m.view = v
-	m.cursor, m.offset, m.filter = 0, 0, ""
+	m.filter = ""
 	m.sortCol, m.sortDesc, m.wide = -1, false, false
-	m.shown = nil
-	m.loading, m.status = true, ""
+	m.status = ""
 	return m, m.fetch()
 }
 

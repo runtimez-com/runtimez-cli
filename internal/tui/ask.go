@@ -275,7 +275,7 @@ func (m Model) askView() string {
 
 	prompt := keyStyle.Render("› ") + m.ask.input.View()
 	if m.ask.busy {
-		prompt = metaStyle.Render("  working… ") + warnStyle.Render("ctrl+c") + metaStyle.Render(" stops the agent")
+		prompt = "  " + m.spin.View() + metaStyle.Render(" working… ") + warnStyle.Render("ctrl+c") + metaStyle.Render(" stops the agent")
 	}
 	b.WriteString(prompt)
 
