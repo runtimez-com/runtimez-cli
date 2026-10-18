@@ -11,11 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/runtimez-com/runtimez-cli/internal/api"
 	"github.com/runtimez-com/runtimez-cli/internal/k8s"
+	"github.com/runtimez-com/runtimez-cli/internal/render"
 )
 
 type mode int
@@ -26,6 +28,7 @@ const (
 	modeCommand
 	modeDetail
 	modeHelp
+	modeAsk
 )
 
 // Options configures a session.
@@ -38,6 +41,9 @@ type Options struct {
 	APIURL      string
 	Refresh     time.Duration
 	InitialView string
+	// Animate runs the loading spinner. Off in tests, where a ticking spinner would keep
+	// every command batch alive; the loader still draws, as a still frame.
+	Animate bool
 }
 
 // Model is the root Bubble Tea model.
@@ -48,6 +54,9 @@ type Model struct {
 
 	view      viewDef
 	namespace string
+	// scope is the workload the drill-down keys act on. It survives a view switch on
+	// purpose — that is what makes l, r, c and t a chain rather than four separate lookups.
+	scope scope
 
 	data    dataset
 	visible []int // indices into the table's rows that survive the filter
@@ -57,11 +66,43 @@ type Model struct {
 	mode   mode
 	input  textinput.Model
 	filter string
+	// palSel is the highlighted row of the command menu while the command bar is open.
+	palSel int
+
+	// sortCol is -1 while the server's own ordering stands; `s` walks it across the
+	// columns and `i` flips the direction.
+	sortCol  int
+	sortDesc bool
+	wide     bool
+	// shown is the table actually drawn — data.table, or its widened form. Cached rather
+	// than rebuilt per frame: widening copies every row, and a 5000-row listing would pay
+	// that on every keystroke.
+	shown *render.Table
+
+	// history is the trail of view names `[` and `]` walk, in visit order.
+	history []string
+	histPos int
+	// groupLast is the screen last shown in each group, for the 1–5 keys to return to.
+	groupLast map[string]string
 
 	detail    *api.WorkloadDetail
 	detailRef string
+	// rowPane is the open detail of a non-resource row (dataset.rowText), drawn in the same
+	// pane as a describe.
+	rowPane string
 
-	loading     bool
+	ask askState
+
+	loading bool
+	// seq numbers each screen load; a response carrying an older number is for a screen
+	// the operator already left, and drawing it would put old rows under the new title.
+	seq       int
+	loadStart time.Time
+	// describing is the workload a describe is waiting on, for the loader to name.
+	describing string
+	spin       spinner.Model
+	spinning   bool
+
 	paused      bool
 	lastUpdated time.Time
 	err         error
@@ -69,6 +110,7 @@ type Model struct {
 }
 
 type rowsMsg struct {
+	seq  int
 	data dataset
 	err  error
 }
@@ -95,11 +137,17 @@ func New(opts Options) Model {
 		v = views["pods"]
 	}
 
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(keyStyle))
+
 	in := textinput.New()
 	in.Prompt = ""
 	in.CharLimit = 120
 
-	return Model{opts: opts, view: v, input: in, loading: true}
+	return Model{
+		opts: opts, view: v, input: in, loading: true, spin: sp, loadStart: time.Now(),
+		sortCol: -1,
+		history: []string{name}, histPos: 0,
+	}.remember(name)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -111,17 +159,23 @@ func (m Model) tick() tea.Cmd {
 }
 
 func (m Model) fetch() tea.Cmd {
-	o, v, ns := m.opts, m.view, m.namespace
+	o, v := m.opts, m.view
+	req := fetchReq{Client: o.Client, OrgID: o.OrgID, ClusterID: o.ClusterID, Namespace: m.namespace}
 	// A view that ignores the namespace scope must not be handed one, or the :ns filter
-	// would appear to apply to screens it has no effect on.
+	// would appear to apply to screens it has no effect on. Same for the workload scope: a
+	// screen that cannot narrow by it must not look as though it did.
 	if !v.namespaced {
-		ns = ""
+		req.Namespace = ""
 	}
+	if v.scopable {
+		req.Scope = m.scope
+	}
+	seq := m.seq
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		d, err := v.fetch(ctx, o.Client, o.OrgID, o.ClusterID, ns)
-		return rowsMsg{data: d, err: err}
+		d, err := v.fetch(ctx, req)
+		return rowsMsg{seq: seq, data: d, err: err}
 	}
 }
 
@@ -136,8 +190,43 @@ func (m Model) fetchDetail(r k8s.Resource) tea.Cmd {
 	}
 }
 
+// Update handles one message, then starts the spinner if that left something loading. The
+// spinner stops itself on the first tick after the loading ends, so an idle screen does not
+// redraw ten times a second.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	mm := next.(Model)
+	if mm.opts.Animate && mm.busy() && !mm.spinning {
+		mm.spinning = true
+		return mm, tea.Batch(cmd, mm.spin.Tick)
+	}
+	return mm, cmd
+}
+
+// busy is whether anything on screen is waiting on the API.
+func (m Model) busy() bool { return m.loading || m.ask.busy }
+
+// beginLoad starts a new screen load: the old rows, error and caveat go, so the loader
+// shows instead of the previous screen's data under the new title.
+func (m Model) beginLoad() Model {
+	m.seq++
+	m.loading, m.loadStart, m.err = true, time.Now(), nil
+	m.data, m.visible, m.shown = dataset{}, nil, nil
+	m.cursor, m.offset = 0, 0
+	return m
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !m.busy() {
+			m.spinning = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -148,9 +237,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paused || m.mode != modeNormal {
 			return m, m.tick()
 		}
+		m.loading = true
 		return m, tea.Batch(m.fetch(), m.tick())
 
 	case rowsMsg:
+		if msg.seq != m.seq {
+			return m, nil
+		}
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err
@@ -158,13 +251,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.data = msg.data
-		m.status = msg.data.notice
+		// The caveat travels with the data and is rendered from it; copying it into
+		// status printed it twice.
+		m.status = ""
+		m.rebuildShown()
 		m.applyFilter()
 		m.lastUpdated = time.Now()
 		return m, nil
 
 	case detailMsg:
-		m.loading = false
+		m.loading, m.describing = false, ""
 		if msg.err != nil {
 			m.err = msg.err
 			m.mode = modeNormal
@@ -178,6 +274,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail, m.detailRef, m.mode = msg.detail, msg.ref, modeDetail
 		return m, nil
 
+	case askFrameMsg:
+		if !msg.open {
+			// The channel closed: the run is over one way or another.
+			m.ask.busy = false
+			return m, nil
+		}
+		m.ask.appendFrame(msg.frame)
+		m.ask.offset = 0
+		return m, waitFrame(m.ask.frames)
+
+	case askAnswerMsg:
+		m.ask.busy = false
+		m.ask.appendAnswer(msg.answer, msg.err)
+		m.ask.offset = 0
+		// The run is over, so drop the subscription. Leaving it open holds an SSE
+		// connection and a goroutine per question for as long as the pane is open — the
+		// flag command stops listening here too.
+		if m.ask.cancel != nil {
+			m.ask.cancel()
+			m.ask.cancel = nil
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -185,7 +304,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Ctrl-C always quits, whatever is focused.
+	// The ask pane owns Ctrl-C while a run is live — there it means "stop the agent", the
+	// same contract the flag command has — so it gets first refusal on every key.
+	if m.mode == modeAsk {
+		return m.handleAskKey(msg)
+	}
+	// Everywhere else Ctrl-C quits, whatever is focused.
 	if msg.Type == tea.KeyCtrlC {
 		return m, tea.Quit
 	}
@@ -199,7 +323,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modeDetail:
 		switch msg.String() {
 		case "esc", "q", "enter":
-			m.mode, m.detail = modeNormal, nil
+			m.mode, m.detail, m.rowPane = modeNormal, nil, ""
 		}
 		return m, nil
 	}
@@ -223,13 +347,50 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeNormal
 		m.input.Blur()
 		if wasCommand {
+			// The highlighted entry is what enter opens. Typed text runs as-is only when it
+			// carries an argument or nothing in the menu matches it.
+			if matches := m.paletteMatches(); len(matches) > 0 && !strings.Contains(value, " ") {
+				value = matches[min(m.palSel, len(matches)-1)].Name
+			}
 			return m.runCommand(value)
 		}
 		return m, nil
 	}
 
+	if m.mode == modeCommand {
+		n := len(m.paletteMatches())
+		switch msg.Type {
+		case tea.KeyUp, tea.KeyCtrlP, tea.KeyShiftTab:
+			if m.palSel > 0 {
+				m.palSel--
+			}
+			return m, nil
+		case tea.KeyDown, tea.KeyCtrlN:
+			if m.palSel < n-1 {
+				m.palSel++
+			}
+			return m, nil
+		case tea.KeyTab:
+			if n > 0 && !strings.Contains(m.input.Value(), " ") {
+				c := m.paletteMatches()[min(m.palSel, n-1)]
+				fill := c.Name
+				if c.Arg != "" {
+					fill += " "
+				}
+				m.input.SetValue(fill)
+				m.input.CursorEnd()
+				m.palSel = 0
+			}
+			return m, nil
+		}
+	}
+
+	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.mode == modeCommand && m.input.Value() != before {
+		m.palSel = 0
+	}
 	if m.mode == modeFilter {
 		// Filter as you type: waiting for enter to see the effect makes narrowing a guess.
 		m.filter = m.input.Value()
@@ -256,15 +417,26 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case ":":
 		m.mode = modeCommand
+		m.palSel = 0
 		m.input.SetValue("")
 		m.input.Focus()
 		m.status = ""
 		return m, textinput.Blink
 
 	case "esc":
-		if m.filter != "" {
+		// One step at a time, narrowest first: the filter is what was typed most recently,
+		// so clearing both at once would throw away a scope the user is still working in.
+		switch {
+		case m.filter != "":
 			m.filter = ""
 			m.applyFilter()
+			m.status = ""
+			return m, nil
+		case !m.scope.empty():
+			m.scope = scope{}
+			m = m.beginLoad()
+			m.status = "scope cleared"
+			return m, m.fetch()
 		}
 		m.status = ""
 		return m, nil
@@ -289,6 +461,13 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clampCursor()
 		return m, nil
 
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		return m.switchGroup(int(msg.String()[0] - '0'))
+	case "tab":
+		return m.cycleScreen(1)
+	case "shift+tab":
+		return m.cycleScreen(-1)
+
 	case "p":
 		m.paused = !m.paused
 		m.status = map[bool]string{true: "auto-refresh paused", false: "auto-refresh resumed"}[m.paused]
@@ -301,6 +480,10 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "d":
 		r, ok := m.selected()
 		if !ok {
+			if text, ok := m.selectedRowText(); ok {
+				m.rowPane, m.mode = text, modeDetail
+				return m, nil
+			}
 			if m.data.table != nil && len(m.data.resources) == 0 {
 				m.status = "this view has no per-row detail — press : to switch to a resource view"
 			}
@@ -308,17 +491,65 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Detail exists for workload controllers only; saying so beats opening a blank pane.
 		if !isDescribable(r.Kind) {
-			m.status = fmt.Sprintf("no detail view for %s — describe covers Deployment, StatefulSet and DaemonSet", r.Kind)
+			m.status = fmt.Sprintf("no detail view for %s — describe covers Pod, Deployment, StatefulSet and DaemonSet", r.Kind)
 			return m, nil
 		}
-		m.loading = true
+		m.loading, m.describing = true, r.Namespace+"/"+r.Name
 		return m, m.fetchDetail(r)
 
-	case "l", "r", "a":
-		// Reserved in the roadmap; claiming the key now while doing nothing would read as a
-		// broken binding.
-		m.status = fmt.Sprintf("%q arrives with logs, risk and ask in a later milestone", msg.String())
+	case "s":
+		// Walk the columns, then off the end back to the server's order — which is a real
+		// state, not a missing one, and has to be reachable again.
+		m.cycleSort()
 		return m, nil
+
+	case "i":
+		if m.sortCol < 0 {
+			m.status = "nothing is sorted yet — press s to pick a column"
+			return m, nil
+		}
+		m.sortDesc = !m.sortDesc
+		m.applyFilter()
+		return m, nil
+
+	case "w":
+		if m.data.table == nil || len(m.data.table.WideHeaders) == 0 {
+			m.status = "this view has no extra columns"
+			return m, nil
+		}
+		m.wide = !m.wide
+		m.rebuildShown()
+		// The widened table has more columns, so a sort pinned to an index still points at
+		// the same column: the extras are appended, never inserted.
+		m.applyFilter()
+		return m, nil
+
+	case "0":
+		if m.namespace == "" {
+			m.status = "already showing every namespace"
+			return m, nil
+		}
+		m.namespace = ""
+		m = m.beginLoad()
+		m.status = "showing all namespaces"
+		return m, m.fetch()
+
+	case "[":
+		return m.stepHistory(-1)
+	case "]":
+		return m.stepHistory(1)
+
+	case "l":
+		return m.drillDown("logs")
+	case "r":
+		return m.drillDown("rca")
+	case "c":
+		return m.drillDown("changes")
+	case "t":
+		return m.drillDown("traces")
+
+	case "a":
+		return m.openAsk()
 	}
 	return m, nil
 }
@@ -344,27 +575,107 @@ func (m Model) runCommand(raw string) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "namespace: " + arg
 		}
-		m.loading = true
+		status := m.status
+		m = m.beginLoad()
+		m.status = status
 		return m, m.fetch()
 	}
 
-	if v, ok := views[name]; ok {
-		m.view = v
-		m.cursor, m.offset, m.filter = 0, 0, ""
-		m.loading, m.status = true, ""
-		return m, m.fetch()
+	if _, ok := views[name]; ok {
+		return m.switchView(name)
 	}
 	if milestone, planned := plannedViews[name]; planned {
 		m.status = fmt.Sprintf("%q is not a view here — see %s", name, milestone)
 		return m, nil
 	}
-	m.status = fmt.Sprintf("unknown command %q — press ? for the list", name)
+	if s := suggestCommand(name); s != "" {
+		m.status = fmt.Sprintf("unknown command %q — did you mean :%s?", name, s)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("unknown command %q — press : to browse every screen", name)
 	return m, nil
 }
 
+// drillDown scopes to the row under the cursor and opens a view about it. On a screen with
+// no resource behind the row it opens the view unscoped and says so, rather than silently
+// showing the whole cluster under a heading that reads like one workload.
+func (m Model) drillDown(name string) (tea.Model, tea.Cmd) {
+	if r, ok := m.selected(); ok {
+		m.scope = scopeOf(r)
+	} else if m.scope.empty() {
+		m.status = "nothing selected — " + name + " is cluster-wide"
+	}
+	return m.switchView(name)
+}
+
+// switchView loads a view by name and records the move so `[` can undo it.
+func (m Model) switchView(name string) (tea.Model, tea.Cmd) {
+	v, ok := views[name]
+	if !ok {
+		m.status = fmt.Sprintf("unknown view %q", name)
+		return m, nil
+	}
+	if m.histPos < len(m.history)-1 {
+		// Moving somewhere new from the middle of the trail abandons the forward branch,
+		// the way a browser does.
+		m.history = m.history[:m.histPos+1]
+	}
+	if len(m.history) == 0 || m.history[m.histPos] != name {
+		m.history = append(m.history, name)
+		m.histPos = len(m.history) - 1
+	}
+	return m.remember(name).loadView(v)
+}
+
+// loadView resets everything that belongs to the outgoing screen. The sort is one of them:
+// column 3 means something different on every view, so carrying it over would silently
+// order the new table by whatever happens to sit there.
+func (m Model) loadView(v viewDef) (tea.Model, tea.Cmd) {
+	m = m.beginLoad()
+	m.view = v
+	m.filter = ""
+	m.sortCol, m.sortDesc, m.wide = -1, false, false
+	m.status = ""
+	return m, m.fetch()
+}
+
+func (m Model) stepHistory(delta int) (tea.Model, tea.Cmd) {
+	next := m.histPos + delta
+	if next < 0 || next >= len(m.history) {
+		if delta < 0 {
+			m.status = "no earlier view"
+		} else {
+			m.status = "no later view"
+		}
+		return m, nil
+	}
+	m.histPos = next
+	return m.remember(m.history[next]).loadView(views[m.history[next]])
+}
+
+// cycleSort advances the sort one step: unsorted → column 0 → … → last column → unsorted.
+func (m *Model) cycleSort() {
+	t := m.activeTable()
+	if t == nil || len(t.Headers) == 0 {
+		return
+	}
+	m.sortCol++
+	if m.sortCol >= len(t.Headers) {
+		m.sortCol = -1
+		m.sortDesc = false
+		m.status = "sorted by the server's own order"
+	} else {
+		m.status = "sorted by " + strings.ToLower(t.Headers[m.sortCol])
+	}
+	m.applyFilter()
+}
+
+// isDescribable names the kinds the detail pane can render. The backend's
+// /workloads/{ns}/{name}/detail takes any kind — it looks the row up by kind/namespace/name
+// — so this list is about having a renderer, not about what the API allows.
 func isDescribable(kind string) bool {
 	switch kind {
-	case "Deployment", "StatefulSet", "DaemonSet":
+	case "Deployment", "StatefulSet", "DaemonSet", "Pod":
 		return true
 	}
 	return false
@@ -382,6 +693,9 @@ func (m *Model) applyFilter() {
 		if needle == "" || strings.Contains(strings.ToLower(strings.Join(row, " ")), needle) {
 			m.visible = append(m.visible, i)
 		}
+	}
+	if m.sortCol >= 0 {
+		sortRows(m.activeTable().Rows, m.visible, m.sortCol, m.sortDesc)
 	}
 	m.clampCursor()
 }
@@ -424,11 +738,59 @@ func (m Model) selected() (k8s.Resource, bool) {
 	return m.data.resources[idx], true
 }
 
-// bodyHeight is the row budget: total minus header block, column header and footer.
+// selectedRowText is the pre-rendered detail of the row under the cursor, on screens whose
+// rows carry one. The visible index points into the table's rows, which rowText mirrors.
+func (m Model) selectedRowText() (string, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.visible) {
+		return "", false
+	}
+	idx := m.visible[m.cursor]
+	if idx < 0 || idx >= len(m.data.rowText) {
+		return "", false
+	}
+	return m.data.rowText[idx], true
+}
+
+// bodyHeight is the row budget: the window minus everything the chrome occupies. It is
+// derived from the same pieces View draws, so the two cannot disagree about how many rows
+// fit — a disagreement shows up as a clipped last row or a scroll that stops early.
 func (m Model) bodyHeight() int {
-	h := m.height - 6
+	if m.height <= 0 {
+		return 20
+	}
+	chrome := tabStripLines + // group tabs + screen tabs
+		1 + // column header inside the table panel
+		2 + // the table panel's own border
+		2 // hint line + status line
+	if m.contextPanelShown() {
+		chrome += panelHeight(contextPanelLines, m.screenWidth())
+	}
+	h := m.height - chrome
 	if h < 1 {
 		return 1
 	}
 	return h
+}
+
+// contextPanelLines is the height of the context panel's body — seven facts, and the key
+// columns are never taller than that.
+const contextPanelLines = 7
+
+func (m Model) contextPanelShown() bool { return m.height <= 0 || m.height >= 20 }
+
+// activeTable is what gets drawn: the view's table, widened when `w` is on.
+func (m Model) activeTable() *render.Table {
+	if m.shown != nil {
+		return m.shown
+	}
+	return m.data.table
+}
+
+// rebuildShown recomputes the drawn table after the data or the wide toggle changes.
+func (m *Model) rebuildShown() {
+	if m.wide {
+		m.shown = m.data.table.Widened()
+		return
+	}
+	m.shown = m.data.table
 }

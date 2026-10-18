@@ -255,3 +255,112 @@ func Post[T any](ctx context.Context, c *Client, path string, query url.Values, 
 	}
 	return out, nil
 }
+
+// RawResponse is one un-decoded HTTP exchange — for protocols that are not the ApiResponse
+// envelope, such as the MCP JSON-RPC endpoint the `rtz mcp` bridge forwards to.
+type RawResponse struct {
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+// PostRaw sends a JSON body and returns the response as-is (no envelope unwrapping, no
+// retries — the caller owns the protocol). The credential handling is the same as Do: bearer
+// header, pre-emptive refresh, and one refresh-and-retry on a 401 for a JWT credential.
+// headers are added verbatim on top of the defaults.
+func (c *Client) PostRaw(ctx context.Context, path string, headers map[string]string, body []byte) (*RawResponse, error) {
+	if c.Creds != nil && c.Creds.NeedsRefresh() {
+		_ = c.refresh(ctx)
+	}
+	resp, err := c.postRawOnce(ctx, path, headers, body)
+	if err == nil && resp.Status == http.StatusUnauthorized && c.Creds != nil && c.Creds.Kind == auth.KindJWT {
+		if rerr := c.refresh(ctx); rerr == nil {
+			return c.postRawOnce(ctx, path, headers, body)
+		}
+	}
+	return resp, err
+}
+
+func (c *Client) postRawOnce(ctx context.Context, path string, headers map[string]string, body []byte) (*RawResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL(path, nil), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "rtz/"+version.Version)
+	if c.Creds != nil {
+		if bearer := c.Creds.Bearer(); bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+	}
+	for k, v := range headers {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: read response: %w", path, err)
+	}
+	return &RawResponse{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: raw}, nil
+}
+
+// Payload is a response decoded twice: Typed is the subset a table renders, Raw is the whole
+// server document. Structured output (-o json|yaml) prints Raw, because the typed struct only
+// carries the fields a table needs and re-encoding it would silently drop the rest.
+type Payload[T any] struct {
+	Typed T
+	Raw   any
+}
+
+// GetPayload is Get that also keeps the full document for lossless structured output.
+func GetPayload[T any](ctx context.Context, c *Client, path string, query url.Values) (*Payload[T], error) {
+	raw, err := c.Do(ctx, http.MethodGet, path, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	p := &Payload[T]{}
+	if len(raw) == 0 || string(raw) == "null" {
+		return p, nil
+	}
+	if err := json.Unmarshal(raw, &p.Typed); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	if err := d.Decode(&p.Raw); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	p.Raw = exactNumbers(p.Raw)
+	return p, nil
+}
+
+// exactNumbers turns json.Number into int64 where it is integral, float64 otherwise. A plain
+// decode makes every number a float64, and YAML then prints a byte count as 1.073741824e+09;
+// json.Number left as is prints as a quoted string in YAML.
+func exactNumbers(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, e := range t {
+			t[k] = exactNumbers(e)
+		}
+	case []any:
+		for i, e := range t {
+			t[i] = exactNumbers(e)
+		}
+	case json.Number:
+		if i, err := t.Int64(); err == nil {
+			return i
+		}
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+	}
+	return v
+}

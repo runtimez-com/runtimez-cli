@@ -183,3 +183,57 @@ func pct(v float64) string {
 }
 
 func ageOf(t time.Time) string { return k8s.Duration(time.Since(t)) }
+
+// AppImpactTable lists upgrade findings by the application (namespace) they land on: what an
+// app team must change first, then what is only affected.
+func AppImpactTable(r *api.UpgradeReadiness) *render.Table {
+	t := &render.Table{
+		Headers:      []string{"NAMESPACE", "CHANGE", "SEVERITY", "AT", "TITLE", "OBJECTS"},
+		WideHeaders:  []string{"ADD-ON", "VERIFY"},
+		EmptyMessage: "No application is affected.",
+	}
+	if r.AppImpact == nil {
+		return t
+	}
+	add := func(ns, change string, it api.AppImpactItem) {
+		objs := ""
+		if len(it.Objects) > 0 {
+			objs = it.Objects[0]
+			if len(it.Objects) > 1 {
+				objs += " +" + strconv.Itoa(len(it.Objects)-1)
+			}
+		}
+		t.Rows = append(t.Rows, []string{ns, change, render.Dash(it.Severity), render.Dash(it.AppliesAtVersion),
+			render.Dash(it.Title), render.Dash(objs)})
+		t.WideRows = append(t.WideRows, []string{render.Dash(it.Addon), render.Dash(it.VerifyCommand)})
+	}
+	for _, a := range r.AppImpact.Applications {
+		for _, it := range a.MustChange {
+			add(a.Namespace, "must change", it)
+		}
+		for _, it := range a.Affected {
+			add(a.Namespace, "affected", it)
+		}
+	}
+	return t
+}
+
+// AddonHopsTable lists add-ons that must move with the Kubernetes upgrade.
+func AddonHopsTable(r *api.UpgradeReadiness) *render.Table {
+	t := &render.Table{
+		Headers:      []string{"ADD-ON", "INSTALLED", "REQUIRED", "ORDER", "WHY"},
+		EmptyMessage: "No add-on has to move.",
+	}
+	for _, h := range r.AddonHops {
+		order := "before Kubernetes"
+		if h.KubernetesFirst {
+			order = "after Kubernetes"
+			if h.ThenVersion != "" {
+				order += ", then " + h.ThenVersion
+			}
+		}
+		t.Rows = append(t.Rows, []string{h.AddonID, render.Dash(h.InstalledVersion), render.Dash(h.RequiredVersion),
+			order, render.Dash(h.Reason)})
+	}
+	return t
+}

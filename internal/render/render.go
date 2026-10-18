@@ -92,21 +92,33 @@ func (p *Printer) Print(data any, table *Table) error {
 	}
 }
 
+// Widened returns the table with its wide columns folded in, or the table itself when it
+// has none. One definition so `-o wide` and the TUI's `w` key show the same columns.
+func (t *Table) Widened() *Table {
+	if t == nil || len(t.WideHeaders) == 0 {
+		return t
+	}
+	out := &Table{
+		Headers:      append(append([]string{}, t.Headers...), t.WideHeaders...),
+		Rows:         make([][]string, len(t.Rows)),
+		EmptyMessage: t.EmptyMessage,
+	}
+	for i, r := range t.Rows {
+		extra := []string{}
+		if i < len(t.WideRows) {
+			extra = t.WideRows[i]
+		}
+		out.Rows[i] = append(append([]string{}, r...), extra...)
+	}
+	return out
+}
+
 func (p *Printer) printTable(t *Table) error {
+	if p.Format == FormatWide {
+		t = t.Widened()
+	}
 	headers := t.Headers
 	rows := t.Rows
-	if p.Format == FormatWide && len(t.WideHeaders) > 0 {
-		headers = append(append([]string{}, headers...), t.WideHeaders...)
-		merged := make([][]string, len(rows))
-		for i, r := range rows {
-			extra := []string{}
-			if i < len(t.WideRows) {
-				extra = t.WideRows[i]
-			}
-			merged[i] = append(append([]string{}, r...), extra...)
-		}
-		rows = merged
-	}
 
 	if len(rows) == 0 {
 		msg := t.EmptyMessage

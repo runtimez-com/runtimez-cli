@@ -142,6 +142,10 @@ func genericTable(rows []k8s.Resource, showNS bool) *render.Table {
 }
 
 func Detail(w io.Writer, d *api.WorkloadDetail) {
+	if d.Workload != nil && d.Workload.Kind == "Pod" {
+		podDetail(w, d)
+		return
+	}
 	wl := k8s.ParseWorkload(*d.Workload)
 
 	fmt.Fprintf(w, "%s/%s\n", wl.Namespace, wl.Name)
@@ -165,17 +169,7 @@ func Detail(w io.Writer, d *api.WorkloadDetail) {
 		printIndented(w, t)
 	}
 
-	section(w, "Events", len(d.Events))
-	if len(d.Events) > 0 {
-		t := &render.Table{Headers: []string{"TYPE", "REASON", "COUNT", "AGE", "MESSAGE"}}
-		for _, ev := range d.Events {
-			t.Rows = append(t.Rows, []string{
-				render.Dash(ev.Type), render.Dash(ev.Reason), strconv.Itoa(ev.Count),
-				k8s.Age(ev.When()), truncate(ev.Message, 80),
-			})
-		}
-		printIndented(w, t)
-	}
+	eventsSection(w, d.Events)
 
 	relatedSection(w, "Services", d.Services, func(r k8s.Resource) []string {
 		s := k8s.ParseService(r)
@@ -250,4 +244,108 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// eventsSection renders correlated events. The backend caps at 50 and ranks Warnings first.
+func eventsSection(w io.Writer, events []api.Event) {
+	section(w, "Events", len(events))
+	if len(events) == 0 {
+		return
+	}
+	t := &render.Table{Headers: []string{"TYPE", "REASON", "COUNT", "AGE", "MESSAGE"}}
+	for _, ev := range events {
+		e := ev.Info()
+		t.Rows = append(t.Rows, []string{
+			render.Dash(e.Type), render.Dash(e.Reason), strconv.Itoa(e.Count),
+			k8s.Age(e.LastTimestamp), truncate(e.Message, 80),
+		})
+	}
+	printIndented(w, t)
+}
+
+// podDetail is the single-pod pane. A pod is not a controller: it has no ready-replica
+// ratio and owns no pods, so the controller renderer's Ready and Pods sections would print
+// "0/0" and "Pods (0)" — both read as findings when they are only the wrong questions.
+func podDetail(w io.Writer, d *api.WorkloadDetail) {
+	p := k8s.ParsePodDetail(*d.Workload)
+
+	fmt.Fprintf(w, "%s/%s\n", p.Namespace, p.Name)
+	fmt.Fprintf(w, "  Kind:      Pod\n")
+	fmt.Fprintf(w, "  Phase:     %s\n", p.Phase)
+	fmt.Fprintf(w, "  Node:      %s\n", render.Dash(p.NodeName))
+	if p.OwnerKind != "" {
+		fmt.Fprintf(w, "  Owner:     %s/%s\n", p.OwnerKind, p.OwnerName)
+	}
+	if p.QoS != "" {
+		fmt.Fprintf(w, "  QoS:       %s\n", p.QoS)
+	}
+	restarts := strconv.Itoa(p.Restarts)
+	if p.Restarts > 0 && p.LastRestartAt != "" {
+		restarts += " (last " + k8s.Age(p.LastRestartAt) + " ago)"
+	}
+	fmt.Fprintf(w, "  Restarts:  %s\n", restarts)
+	fmt.Fprintf(w, "  Age:       %s\n", k8s.Age(p.CreatedAt))
+	if p.ServiceAccount != "" {
+		fmt.Fprintf(w, "  Account:   %s\n", p.ServiceAccount)
+	}
+	if p.HostNetwork {
+		fmt.Fprintf(w, "  Network:   hostNetwork\n")
+	}
+	if labels := d.Workload.LabelsOf(); len(labels) > 0 {
+		fmt.Fprintf(w, "  Labels:    %s\n", formatLabels(labels))
+	}
+
+	section(w, "Containers", len(p.Containers))
+	if p.MissingContainers {
+		// Distinguish "this pod has no containers" — impossible — from a payload that did
+		// not carry them, which is an agent-version question, not a workload one.
+		fmt.Fprintln(w, "  no container detail in this record — the agent did not report it")
+	} else {
+		t := &render.Table{Headers: []string{"NAME", "IMAGE", "READY", "RESTARTS", "STATE", "CPU R/L", "MEM R/L", "PROBES"}}
+		for _, c := range p.Containers {
+			name := c.Name
+			if c.Init {
+				name += " (init)"
+			}
+			t.Rows = append(t.Rows, []string{
+				name, render.Dash(c.Image), strconv.FormatBool(c.Ready), strconv.Itoa(c.Restarts),
+				c.StateLabel(), c.CPU(), c.Mem(), render.Dash(strings.Join(c.Probes, ",")),
+			})
+		}
+		printIndented(w, t)
+	}
+
+	var terminated []k8s.Container
+	for _, c := range p.Containers {
+		if c.LastTerminatedReason != "" || c.HasLastExitCode {
+			terminated = append(terminated, c)
+		}
+	}
+	if len(terminated) > 0 {
+		section(w, "Last terminated", len(terminated))
+		t := &render.Table{Headers: []string{"CONTAINER", "REASON", "EXIT", "WHEN"}}
+		for _, c := range terminated {
+			exit := "-"
+			if c.HasLastExitCode {
+				exit = strconv.Itoa(c.LastExitCode)
+			}
+			t.Rows = append(t.Rows, []string{
+				c.Name, render.Dash(c.LastTerminatedReason), exit, k8s.Age(c.LastFinishedAt),
+			})
+		}
+		printIndented(w, t)
+	}
+
+	section(w, "Conditions", len(p.Conditions))
+	if len(p.Conditions) > 0 {
+		t := &render.Table{Headers: []string{"TYPE", "STATUS", "REASON", "MESSAGE"}}
+		for _, c := range p.Conditions {
+			t.Rows = append(t.Rows, []string{
+				c.Type, c.Status, render.Dash(c.Reason), truncate(c.Message, 60),
+			})
+		}
+		printIndented(w, t)
+	}
+
+	eventsSection(w, d.Events)
 }

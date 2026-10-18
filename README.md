@@ -39,9 +39,14 @@ Run `rtz` with no arguments for the full-screen UI.
 
 | Key | Action |
 |---|---|
-| `:` | command bar — `:pods`, `:deploy`, `:sts`, `:ds`, `:svc`, `:ing`, `:nodes`, `:all`, `:risk`, `:signals`, `:changes`, `:logs`, `:traces`, `:ns <name>`, `:q` |
+| `:` | browse every screen: the menu lists them grouped (resources, reliability, observability, capacity and lifecycle, add-ons) and narrows as you type — `↑↓` select, `tab` complete, `enter` open. A typo gets a "did you mean" |
+| `:` | capacity and lifecycle — `:capacity`, `:pending`, `:storage`, `:maintain`, `:upgrade` |
+| `:` | add-on workspaces — `:karpenter`, `:ca`, `:traefik`, `:istio`, `:argocd`, `:cni`, `:ebs` |
+| `:` | resources and the rest — `:pods`, `:deploy`, `:sts`, `:ds`, `:svc`, `:ing`, `:nodes`, `:all`, `:risk`, `:signals`, `:changes`, `:logs`, `:traces`, `:ns <name>`, `:q` |
+| `1`–`5` | switch group — Resources, Reliability, Observability, Capacity, Add-ons — back to the screen you last used there |
+| `tab` / `shift+tab` | next / previous screen in the group; the two tab lines at the top show both |
 | `/` | filter the visible rows as you type |
-| `enter` / `d` | describe the selected workload |
+| `enter` / `d` | describe the selected workload; on capacity, Maintain, upgrade and add-on screens, open the row's findings with their verify commands |
 | `p` | pause or resume auto-refresh |
 | `ctrl+r` | refresh now |
 | `?` | keys and commands |
@@ -117,6 +122,57 @@ otherwise reads exactly like one built on fresh data. Extended-support costs are
 
 `upgrade fleet` reports clusters it could not analyse rather than folding them into a pass.
 
+`upgrade check` also lists the add-ons that must move with Kubernetes, how many patches the
+cluster is behind, and an **Applications** section: per namespace, what the app team must
+change before the upgrade and what is only affected by it.
+
+## Capacity
+
+```bash
+rtz capacity                           # headroom per axis, node pools, pending pods
+rtz capacity --section blocked         # every pending pod and why (pools|nodes|blocked|storage|network|batch|special)
+rtz capacity trend --days 30           # growth and days until each pool is full
+rtz capacity cost                      # node cost per pool and the levers that change it
+rtz capacity namespaces                # requests, quota and pending pods per namespace
+rtz capacity fleet                     # every cluster, soonest-full first
+```
+
+Usage gaps (nodes with no samples), truncated rows, uncollected quotas and unpriced nodes
+are stated as warnings — an unread figure prints `?` or `unpriced`, never `0`.
+
+## Maintain
+
+```bash
+rtz maintain items --within 90         # support deadlines across the org, soonest first
+rtz maintain items --fail-on-days 30   # CI: exit 4 when a deadline is 30 days away or less
+rtz maintain packages --ecosystem maven --q log4j
+rtz maintain dependents data/StatefulSet/postgres   # who connects to it
+rtz maintain impact data/StatefulSet/postgres --target 17
+```
+
+Platform items (Kubernetes, add-ons, system workloads) are hidden unless `--platform` —
+`rtz upgrade check` owns those. A list the backend could not finish reading exits 1.
+
+## Add-on workspaces
+
+```bash
+rtz addons nodepools [name]            # Karpenter (alias: karpenter)
+rtz addons cluster-autoscaler [group]  # alias: ca
+rtz addons ingress [ns/name]           # Traefik routes (alias: traefik)
+rtz addons mesh [ns/name]              # Istio (alias: istio)
+rtz addons gitops [ns/name]            # Argo CD (alias: argocd)
+rtz addons vpc-cni [node]              # Amazon VPC CNI
+rtz addons ebs-csi [node]              # Amazon EBS CSI
+rtz addons istio --fail-on high        # CI gate on add-on findings
+```
+
+Without an argument each lists its objects with the worst finding; with one it prints that
+object's findings with the command that verifies each. An add-on that is not installed, not
+synced or has its rules off says so instead of printing an empty table.
+
+`-o json` / `-o yaml` on every command above prints the full server document, not the subset
+the tables show.
+
 ## Pre-merge gate
 
 ```bash
@@ -164,6 +220,24 @@ computed from missing evidence is the most dangerous output this tool could prod
 - `rca` prints "no trace data for this workload" instead of a fabricated 0% error rate.
 - `rca explain` states whether the answer came from a model, a cache replay, or a
   deterministic gate — the prose alone does not reveal which.
+
+## MCP server (Claude Code and other agents)
+
+`rtz mcp` serves the Runtimez MCP server over stdio, so an MCP client can ask Runtimez
+instead of guessing: what is running, what changed, ranked risk findings, the upgrade
+readiness ledger with the vendor's verbatim rule text, and a pre-merge manifest check. It
+is a bridge — every message is forwarded to the hosted endpoint (`POST /eac/mcp`) with this
+CLI's credential, so the tool catalog is exactly the server's and every tool is read-only.
+
+```bash
+claude mcp add runtimez -- rtz mcp                              # uses the current context
+claude mcp add runtimez -- rtz mcp --context prod --cluster prod-eu
+```
+
+Remote clients (Claude Code `--transport http`, Cursor, claude.ai connectors) can skip the
+CLI and point at `https://<api>/eac/mcp` with `Authorization: Bearer rk_...` (an API key
+with the `api:read` scope). A `--cluster` (or the context's cluster) is injected as the
+default `cluster` argument when the client did not pass one.
 
 ## Everyday commands
 

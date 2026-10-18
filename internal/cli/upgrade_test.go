@@ -251,3 +251,38 @@ func TestRiskCheckCleanBundleSaysSo(t *testing.T) {
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
+
+func TestUpgradeCheckShowsAppImpactHopsAndPatch(t *testing.T) {
+	srv := resourceServer(t, map[string]any{
+		clusterBase + "/upgrade-readiness": map[string]any{
+			"currentVersion": "1.33", "targetVersion": "1.34", "score": 40, "riskLevel": "MEDIUM", "findings": []any{},
+			"addonHops": []map[string]any{{"addonId": "istio", "installedVersion": "1.26.2", "requiredVersion": "1.27.0",
+				"reason": "1.26 does not support Kubernetes 1.34"}},
+			"patchCurrency": map[string]any{"currentVersion": "1.33.1", "latestPatchVersion": "1.33.5",
+				"patchesBehind": 4, "upToDate": false, "dataSourced": true},
+			"appImpact": map[string]any{"namespacesRead": true, "platformFindings": 2,
+				"applications": []map[string]any{{"namespace": "shop",
+					"mustChange": []map[string]any{{"ruleId": "k8s-134-x", "title": "Remove flowcontrol v1beta3",
+						"severity": "HIGH", "appliesAtVersion": "1.34", "objects": []string{"FlowSchema/a", "FlowSchema/b"}}},
+					"affected": []map[string]any{{"title": "Sidecar probe race", "severity": "LOW", "addon": "istio"}}}}},
+			"remediation": map[string]any{"untypedButKept": true},
+		},
+	})
+	defer srv.Close()
+	isolateCluster(t, srv)
+
+	out, code := run(t, "upgrade", "check")
+	if code != ExitOK {
+		t.Fatalf("exit = %d:\n%s", code, out)
+	}
+	for _, want := range []string{"Add-ons that must move (1)", "istio", "1.27.0", "before Kubernetes",
+		"1.33.1 is 4 patch(es) behind 1.33.5", "Applications (2)", "must change", "Remove flowcontrol v1beta3",
+		"FlowSchema/a +1", "affected", "2 finding(s) are platform-only"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if out, _ := run(t, "upgrade", "check", "-o", "json"); !strings.Contains(out, "untypedButKept") {
+		t.Errorf("-o json dropped a field the CLI does not type:\n%s", out)
+	}
+}

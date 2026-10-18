@@ -39,6 +39,7 @@ func runTUI(cmd *cobra.Command) error {
 		APIURL:      e.client.BaseURL,
 		Refresh:     flags.refresh,
 		InitialView: flags.initialView,
+		Animate:     true,
 	})
 
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(cmd.Context()))
