@@ -41,6 +41,14 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.tabStrip())
 	b.WriteByte('\n')
+	if m.mode == modeCommand {
+		// The menu takes the context panel's rows as well as the table's: the whole
+		// catalog fits on an ordinary terminal, and the frame is still the same height.
+		b.WriteString(m.paletteView())
+		b.WriteByte('\n')
+		b.WriteString(m.footer())
+		return b.String()
+	}
 	if head := m.contextPanel(); head != "" {
 		b.WriteString(head)
 		b.WriteByte('\n')
@@ -61,14 +69,23 @@ func (m Model) screenWidth() int {
 }
 
 func (m Model) tabStrip() string {
-	left := chipStyle.Render(" "+m.view.Title+" ") + " " +
-		metaStyle.Render(m.scopeLabel()) + m.breadcrumb() + "   " +
-		footerStyle.Render(keyStyle.Render(":")+" commands   "+
-			keyStyle.Render("/")+" filter   "+
-			keyStyle.Render("?")+" help")
-
+	head := chipStyle.Render(" "+m.view.Title+" ") + " " +
+		metaStyle.Render(m.scopeLabel()) + m.breadcrumb()
+	keys := "   " + footerStyle.Render(keyStyle.Render(":")+" browse screens   "+
+		keyStyle.Render("/")+" filter   "+
+		keyStyle.Render("?")+" help")
 	right := metaStyle.Render(m.identity() + " · rtz " + version.Version)
-	return spread(left, right, m.screenWidth())
+
+	// On a narrow window the identity goes first, then the key reminder; what is on screen
+	// stays, clipped rather than wrapped.
+	w := m.screenWidth()
+	switch {
+	case lipgloss.Width(head+keys)+1+lipgloss.Width(right) <= w:
+		return spread(head+keys, right, w)
+	case lipgloss.Width(head+keys) <= w:
+		return head + keys
+	}
+	return clip(head, w)
 }
 
 func (m Model) identity() string {
@@ -146,7 +163,7 @@ func (m Model) contextPanel() string {
 		[2]string{"a", "ask about it"},
 	), keyBlock(
 		[2]string{"/", "filter"},
-		[2]string{":", "command"},
+		[2]string{":", "browse screens"},
 		[2]string{"s", "sort column"},
 		[2]string{"i", "invert sort"},
 		[2]string{"w", "wide columns"},
@@ -245,11 +262,14 @@ func (m Model) footer() string {
 	case modeFilter:
 		return keyStyle.Render(" /") + m.input.View()
 	case modeCommand:
-		return keyStyle.Render(" :") + m.input.View()
+		// Two lines, like the hint and status lines it replaces, so the frame holds still.
+		return keyStyle.Render(" :") + m.input.View() + "\n" + " " + strings.Join([]string{
+			hint("↑↓", "select"), hint("tab", "complete"), hint("enter", "open"), hint("esc", "cancel"),
+		}, "  ")
 	}
 
 	hints := " " + strings.Join([]string{
-		hint(":", "command"), hint("/", "filter"), hint("d", "describe"),
+		hint(":", "screens"), hint("/", "filter"), hint("d", "describe"),
 		hint("l", "logs"), hint("r", "rca"), hint("c", "changes"), hint("t", "traces"),
 		hint("a", "ask"), hint("s", "sort"), hint("w", "wide"),
 		hint("?", "help"), hint("q", "quit"),
@@ -420,22 +440,9 @@ func (m Model) helpView() string {
 	for _, r := range keys {
 		b.WriteString(keyStyle.Render(lipgloss.NewStyle().Width(12).Render(r[0])) + r[1] + "\n")
 	}
-	b.WriteString("\n" + headerStyle.Render("Commands") + "\n")
-	for _, c := range [][2]string{
-		{":pods, :deploy, :sts, :ds", "resource views"},
-		{":svc, :ing, :nodes, :jobs", "resource views"},
-		{":all", "every kind"},
-		{":triage", "what is failing right now"},
-		{":risk, :rca, :signals, :changes", "reliability views"},
-		{":logs, :traces", "observability views"},
-		{":capacity, :pending, :storage", "capacity: pools, pending pods, PVCs"},
-		{":maintain, :upgrade", "support deadlines, upgrade impact per app"},
-		{":karpenter, :ca, :traefik", "add-on workspaces"},
-		{":istio, :argocd, :cni, :ebs", "add-on workspaces"},
-		{":ns <name>", "scope to a namespace (bare :ns clears it)"},
-		{":q", "quit"},
-	} {
-		b.WriteString(keyStyle.Render(lipgloss.NewStyle().Width(32).Render(c[0])) + c[1] + "\n")
+	b.WriteString("\n" + headerStyle.Render("Commands") + metaStyle.Render("  (press : to browse and search them)") + "\n")
+	for _, g := range commandGroups() {
+		b.WriteString(keyStyle.Render(lipgloss.NewStyle().Width(22).Render(g.name)) + strings.Join(g.names, "  ") + "\n")
 	}
 	b.WriteString("\n" + metaStyle.Render(
 		"Every view here has a flag equivalent — :deploy is `rtz get deploy`, d is `rtz describe`."))

@@ -62,6 +62,8 @@ type Model struct {
 	mode   mode
 	input  textinput.Model
 	filter string
+	// palSel is the highlighted row of the command menu while the command bar is open.
+	palSel int
 
 	// sortCol is -1 while the server's own ordering stands; `s` walks it across the
 	// columns and `i` flips the direction.
@@ -287,13 +289,50 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeNormal
 		m.input.Blur()
 		if wasCommand {
+			// The highlighted entry is what enter opens. Typed text runs as-is only when it
+			// carries an argument or nothing in the menu matches it.
+			if matches := m.paletteMatches(); len(matches) > 0 && !strings.Contains(value, " ") {
+				value = matches[min(m.palSel, len(matches)-1)].Name
+			}
 			return m.runCommand(value)
 		}
 		return m, nil
 	}
 
+	if m.mode == modeCommand {
+		n := len(m.paletteMatches())
+		switch msg.Type {
+		case tea.KeyUp, tea.KeyCtrlP, tea.KeyShiftTab:
+			if m.palSel > 0 {
+				m.palSel--
+			}
+			return m, nil
+		case tea.KeyDown, tea.KeyCtrlN:
+			if m.palSel < n-1 {
+				m.palSel++
+			}
+			return m, nil
+		case tea.KeyTab:
+			if n > 0 && !strings.Contains(m.input.Value(), " ") {
+				c := m.paletteMatches()[min(m.palSel, n-1)]
+				fill := c.Name
+				if c.Arg != "" {
+					fill += " "
+				}
+				m.input.SetValue(fill)
+				m.input.CursorEnd()
+				m.palSel = 0
+			}
+			return m, nil
+		}
+	}
+
+	before := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.mode == modeCommand && m.input.Value() != before {
+		m.palSel = 0
+	}
 	if m.mode == modeFilter {
 		// Filter as you type: waiting for enter to see the effect makes narrowing a guess.
 		m.filter = m.input.Value()
@@ -320,6 +359,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case ":":
 		m.mode = modeCommand
+		m.palSel = 0
 		m.input.SetValue("")
 		m.input.Focus()
 		m.status = ""
@@ -479,7 +519,11 @@ func (m Model) runCommand(raw string) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("%q is not a view here — see %s", name, milestone)
 		return m, nil
 	}
-	m.status = fmt.Sprintf("unknown command %q — press ? for the list", name)
+	if s := suggestCommand(name); s != "" {
+		m.status = fmt.Sprintf("unknown command %q — did you mean :%s?", name, s)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("unknown command %q — press : to browse every screen", name)
 	return m, nil
 }
 
